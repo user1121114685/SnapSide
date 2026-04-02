@@ -143,10 +143,10 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 1,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -169,10 +169,10 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 2,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -190,10 +190,10 @@
     ],
     "test_hint": "在主屏、左侧副屏、右侧副屏场景下，返回的工作区左上角与宽高均落在虚拟屏幕坐标系中；任务栏位于不同边时图标起点不压住任务栏。",
     "test_commands": [],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 1,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -216,10 +216,10 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 1,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -240,10 +240,10 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 2,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -267,10 +267,10 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 2,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
@@ -289,10 +289,10 @@
     ],
     "test_hint": "给定不同工作区尺寸和图标数量时，计算结果从左上角开始、Y 轴优先递增、越界后换列；人工检查末尾图标不会超出工作区。",
     "test_commands": [],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 2,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""
