@@ -65,10 +65,10 @@
     ],
     "test_hint": "代码可成功编译；人工检查结构体字段已覆盖设备名、主副屏标记、显示器矩形、工作区矩形、目标显示器标识、最近执行时间、首次自动执行状态等核心信息。",
     "test_commands": [],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 1,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
     "diagnosis": ""

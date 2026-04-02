@@ -22,6 +22,9 @@ add_executable(IconMover WIN32
     src/main.cpp
     src/app/App.cpp
     src/app/App.h
+    src/core/AppState.h
+    src/core/Constants.h
+    src/core/Models.h
     src/common/Logger.cpp
     src/common/Logger.h
     src/common/Win32Error.cpp

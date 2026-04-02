@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "core/AppState.h"
+
 namespace icon_mover
 {
 class App final
@@ -24,6 +26,6 @@ private:
     HWND window_;
     ATOM window_class_;
     bool log_test_error_;
+    AppState state_;
 };
 }  // namespace icon_mover
-

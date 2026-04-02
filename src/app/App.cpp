@@ -27,8 +27,11 @@ App::App(HINSTANCE instance, bool log_test_error) noexcept
 
 int App::Run()
 {
+    state_.lifecycle = AppLifecycleState::Bootstrap;
+
     if (!Initialize())
     {
+        state_.lifecycle = AppLifecycleState::ShuttingDown;
         Logger::Error(kBootstrapPhase, L"Application initialization failed.");
         return EXIT_FAILURE;
     }
@@ -72,6 +75,7 @@ bool App::Initialize()
         return false;
     }
 
+    state_.lifecycle = AppLifecycleState::Running;
     Logger::Info(kBootstrapPhase, L"Application bootstrap completed.");
     return true;
 }
@@ -172,6 +176,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_p
         return 0;
 
     case WM_DESTROY:
+        state_.lifecycle = AppLifecycleState::ShuttingDown;
         Logger::Info(kShutdownPhase, L"Application shutdown requested.");
         ::PostQuitMessage(0);
         return 0;
