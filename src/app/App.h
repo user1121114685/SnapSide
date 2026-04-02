@@ -7,7 +7,7 @@ namespace icon_mover
 class App final
 {
 public:
-    explicit App(HINSTANCE instance) noexcept;
+    App(HINSTANCE instance, bool log_test_error) noexcept;
 
     int Run();
 
@@ -23,5 +23,7 @@ private:
     HINSTANCE instance_;
     HWND window_;
     ATOM window_class_;
+    bool log_test_error_;
 };
 }  // namespace icon_mover
+

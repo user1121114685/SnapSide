@@ -20,10 +20,10 @@ import subprocess
 import argparse
 import sys
 import io
+import difflib
 import queue
 import shutil
 import threading
-import tarfile
 import time
 import re
 import tempfile
@@ -368,6 +368,8 @@ REVIEW_DIFF_CHAR_LIMIT      = int(os.environ.get("AGENT_REVIEW_DIFF_CHAR_LIMIT",
 STREAM_POLL_INTERVAL_SEC    = 0.2
 STREAM_DRAIN_TIMEOUT_SEC    = 5
 PROCESS_STOP_TIMEOUT_SEC    = 10
+CODEX_STREAM_OUTPUT         = os.environ.get("AGENT_CODEX_STREAM_OUTPUT", "").strip().lower() in {"1", "true", "yes", "on"}
+CODEX_STATUS_INTERVAL_SEC   = int(os.environ.get("AGENT_CODEX_STATUS_INTERVAL_SEC", 30))
 
 AGENT_ARTIFACT_PATHS = {TASK_FILE, PRD_FILE, "codex_last_output.txt", "codex_review_last_output.txt"}
 AGENT_ARTIFACT_GLOBS = (f"{REVIEW_DIR}/**", ".agent_restore/**", "__pycache__/**")
@@ -484,7 +486,10 @@ def _write_process_input(process: subprocess.Popen, input_text: str):
         pass
 
 
-def run_streaming_cmd(cmd, *, label, cwd=None, input_text=None, total_timeout=0, idle_timeout=0):
+def run_streaming_cmd(
+    cmd, *, label, cwd=None, input_text=None, total_timeout=0, idle_timeout=0,
+    echo_output=True, status_interval=0,
+):
     use_shell = isinstance(cmd, str)
     env = build_cli_env()
     env["CI"] = "true"
@@ -511,6 +516,7 @@ def run_streaming_cmd(cmd, *, label, cwd=None, input_text=None, total_timeout=0,
     guard_reason = None
     started_at = time.monotonic()
     last_output_at = started_at
+    last_status_at = started_at
     exited_at = None
 
     try:
@@ -523,7 +529,8 @@ def run_streaming_cmd(cmd, *, label, cwd=None, input_text=None, total_timeout=0,
             now = time.monotonic()
 
             if kind == "data":
-                print(payload, end="", flush=True)
+                if echo_output:
+                    print(payload, end="", flush=True)
                 lines.append(payload)
                 last_output_at = now
             elif kind == "eof":
@@ -533,6 +540,9 @@ def run_streaming_cmd(cmd, *, label, cwd=None, input_text=None, total_timeout=0,
                 exited_at = now
 
             if process.poll() is None:
+                if not echo_output and status_interval > 0 and now - last_status_at >= status_interval:
+                    log("⏳", f"{label} 运行中，已等待 {int(now - started_at)}s", "cyan")
+                    last_status_at = now
                 if total_timeout > 0 and now - started_at > total_timeout:
                     guard_reason = f"总超时 {total_timeout}s"
                 elif idle_timeout > 0 and now - last_output_at > idle_timeout:
@@ -569,7 +579,8 @@ def run_streaming_cmd(cmd, *, label, cwd=None, input_text=None, total_timeout=0,
                     break
                 drained = True
                 if kind == "data":
-                    print(payload, end="", flush=True)
+                    if echo_output:
+                        print(payload, end="", flush=True)
                     lines.append(payload)
                 elif kind == "eof":
                     reader_done = True
@@ -611,6 +622,13 @@ def resolve_cli(name: str) -> str:
 
 def normalize_codex_prompt(prompt: str) -> str:
     return prompt.rstrip() + "\n\n补充要求：直接输出本次请求的最终结果，不要追加『如果你愿意我可以继续』等征询式收尾。"
+
+
+def write_temp_json_file(prefix: str, payload) -> Path:
+    fd, temp_path = tempfile.mkstemp(prefix=prefix, suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, ensure_ascii=False)
+    return Path(temp_path)
 
 
 def save_tasks(tasks: list[dict]):
@@ -660,6 +678,89 @@ def extract_json_payload(raw: str, expected_type=None):
         except Exception as exc:
             last_error = exc
     raise ValueError(f"JSON 解析失败: {last_error}")
+
+
+CODEX_TASKS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["id", "phase", "desc", "depends_on", "files_hint", "test_hint", "test_commands"],
+        "properties": {
+            "id": {"type": "string"},
+            "phase": {"type": "string"},
+            "desc": {"type": "string"},
+            "depends_on": {"type": "array", "items": {"type": "string"}},
+            "files_hint": {"type": "array", "items": {"type": "string"}},
+            "test_hint": {"type": "string"},
+            "test_commands": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+}
+
+
+CODEX_REVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["result", "summary"],
+    "properties": {
+        "result": {"type": "string", "enum": ["PASS", "FAIL"]},
+        "summary": {"type": "string"},
+    },
+}
+
+
+CODEX_REPLAN_TASK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["desc", "files_hint", "test_hint", "test_commands"],
+    "properties": {
+        "desc": {"type": "string"},
+        "files_hint": {"type": "array", "items": {"type": "string"}},
+        "test_hint": {"type": "string"},
+        "test_commands": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+CODEX_REPLAN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "reason", "new_tasks", "updated_task"],
+    "properties": {
+        "action": {"type": "string", "enum": ["replan", "update"]},
+        "reason": {"type": "string"},
+        "new_tasks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "phase", "desc", "depends_on", "files_hint", "test_hint", "test_commands"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "phase": {"type": "string"},
+                    "desc": {"type": "string"},
+                    "depends_on": {"type": "array", "items": {"type": "string"}},
+                    "files_hint": {"type": "array", "items": {"type": "string"}},
+                    "test_hint": {"type": "string"},
+                    "test_commands": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "updated_task": {
+            "anyOf": [
+                {"type": "null"},
+                CODEX_REPLAN_TASK_SCHEMA,
+            ]
+        },
+    },
+}
+
+
+def format_review_payload(review_payload: dict) -> str:
+    result = str(review_payload.get("result") or "").strip().upper() or "FAIL"
+    summary = str(review_payload.get("summary") or "").strip()
+    return result if not summary else f"{result}\n{summary}"
 
 
 # =========================
@@ -722,103 +823,102 @@ def get_task_neighbor_context(tasks: list[dict], task_id: str, window: int = TAS
 # =========================
 # Codex 调用
 # =========================
-def call_codex(prompt: str) -> str:
-    log("🤖", "调用 Codex（可能需要1~3分钟，请耐心等待）...")
-    output_file = Path("codex_last_output.txt")
+def call_codex(
+    prompt: str,
+    *,
+    label: str = "Codex",
+    output_file_name: str = "codex_last_output.txt",
+    total_timeout: int | None = None,
+    idle_timeout: int | None = None,
+    output_schema: dict | None = None,
+    failure_fallback: str = "",
+) -> str:
+    output_file = Path(output_file_name)
     if output_file.exists():
         output_file.unlink()
 
-    prompt = normalize_codex_prompt(prompt)
-    cmd = [
-        resolve_cli("codex"), "exec",
-        "-m", CODEX_MODEL,
-        "-s", "danger-full-access",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--ephemeral",
-        "--color", "never",
-        "-o", str(output_file),
-        "-"
-    ]
+    icon = "🔍" if "Review" in label else "🤖"
+    log(icon, f"调用 {label}（简洁模式）...", "cyan")
 
-    print(c("── Codex 输出 ──────────────────────────", "cyan"))
-    result = run_streaming_cmd(
-        cmd, label="Codex", input_text=prompt,
-        total_timeout=CODEX_TOTAL_TIMEOUT_SEC,
-        idle_timeout=CODEX_IDLE_TIMEOUT_SEC,
-    )
-    print(c("────────────────────────────────────────", "cyan"))
+    schema_file = None
+    try:
+        prompt = normalize_codex_prompt(prompt)
+        cmd = [
+            resolve_cli("codex"), "exec",
+            "-m", CODEX_MODEL,
+            "-s", "danger-full-access",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--ephemeral",
+            "--color", "never",
+            "-o", str(output_file),
+        ]
+        if output_schema:
+            schema_file = write_temp_json_file("codex-output-schema-", output_schema)
+            cmd.extend(["--output-schema", str(schema_file)])
+        cmd.append("-")
 
-    if output_file.exists():
-        output = output_file.read_text(encoding="utf-8").strip()
-        output_file.unlink()
-    else:
-        output = result["output"]
+        result = run_streaming_cmd(
+            cmd,
+            label=label,
+            input_text=prompt,
+            total_timeout=CODEX_TOTAL_TIMEOUT_SEC if total_timeout is None else total_timeout,
+            idle_timeout=CODEX_IDLE_TIMEOUT_SEC if idle_timeout is None else idle_timeout,
+            echo_output=CODEX_STREAM_OUTPUT,
+            status_interval=0 if CODEX_STREAM_OUTPUT else CODEX_STATUS_INTERVAL_SEC,
+        )
 
-    if result["guard_reason"] and output:
-        log("⚠️", f"Codex 触发进程保护（{result['guard_reason']}），已使用已生成的最终输出继续", "yellow")
-    elif result["guard_reason"] and not output:
-        log("❌", f"Codex 触发进程保护（{result['guard_reason']}），且未拿到最终输出", "red")
-
-    if result["returncode"] != 0 and not output:
-        stream_text = result["output"]
-        if "stream disconnected before completion" in stream_text:
-            log("❌", "Codex 连接在响应完成前中断，请检查网络或代理配置。", "red")
+        if output_file.exists():
+            output = output_file.read_text(encoding="utf-8").strip()
+            output_file.unlink()
         else:
-            log("❌", f"Codex 调用失败 (exit {result['returncode']})", "red")
-    return output
+            output = result["output"]
+
+        if result["guard_reason"] and output:
+            log("⚠️", f"{label} 触发进程保护（{result['guard_reason']}），已使用最终输出继续", "yellow")
+        elif result["guard_reason"] and not output:
+            log("❌", f"{label} 触发进程保护（{result['guard_reason']}），且未拿到最终输出", "red")
+
+        if result["returncode"] != 0 and not output:
+            stream_text = result["output"]
+            if "stream disconnected before completion" in stream_text:
+                log("❌", f"{label} 连接在响应完成前中断，请检查网络或代理配置。", "red")
+            else:
+                log("❌", f"{label} 调用失败 (exit {result['returncode']})", "red")
+            return failure_fallback
+
+        return output
+    finally:
+        output_file.unlink(missing_ok=True)
+        if schema_file is not None:
+            schema_file.unlink(missing_ok=True)
 
 
-def call_codex_review(prompt: str) -> str:
-    log("🔍", "调用 Codex 代码审核（请稍候）...")
-    output_file = Path("codex_review_last_output.txt")
-    if output_file.exists():
-        output_file.unlink()
-
-    prompt = normalize_codex_prompt(prompt)
-    cmd = [
-        resolve_cli("codex"), "exec",
-        "-m", CODEX_MODEL,
-        "-s", "danger-full-access",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--ephemeral",
-        "--color", "never",
-        "-o", str(output_file),
-        "-"
-    ]
-
-    print(c("── Codex 审核输出 ──────────────────────", "cyan"))
-    result = run_streaming_cmd(
-        cmd, label="Codex-Review", input_text=prompt,
+def call_codex_review(prompt: str, *, output_schema: dict | None = None) -> str:
+    return call_codex(
+        prompt,
+        label="Codex-Review",
+        output_file_name="codex_review_last_output.txt",
         total_timeout=REVIEW_TOTAL_TIMEOUT_SEC,
         idle_timeout=REVIEW_IDLE_TIMEOUT_SEC,
+        output_schema=output_schema,
+        failure_fallback="[Codex审核调用失败]\nFAIL",
     )
-    print(c("────────────────────────────────────────", "cyan"))
-
-    if result["guard_reason"]:
-        log("⚠️", f"Codex 审核触发进程保护（{result['guard_reason']}）", "yellow")
-
-    if output_file.exists():
-        output = output_file.read_text(encoding="utf-8").strip()
-        output_file.unlink()
-    else:
-        output = result["output"]
-
-    if result["returncode"] != 0 and not output:
-        log("❌", f"Codex 审核调用失败 (exit {result['returncode']})", "red")
-        return "[Codex审核调用失败]\nFAIL"
-    return output
 
 
 # =========================
 # Git 管理
 # =========================
+def normalize_repo_path(path: str) -> str:
+    return path.strip().replace("\\", "/")
+
+
 def list_tracked_change_files() -> list[str]:
     changed = set()
     for cmd in (["git", "diff", "--name-only"], ["git", "diff", "--cached", "--name-only"]):
         ok, out = run_cmd(cmd)
         if not ok and not out:
             continue
-        changed.update(line.strip() for line in out.splitlines() if line.strip())
+        changed.update(normalize_repo_path(line) for line in out.splitlines() if line.strip())
     return sorted(changed)
 
 
@@ -826,11 +926,11 @@ def list_untracked_files() -> list[str]:
     ok, out = run_cmd(["git", "ls-files", "--others", "--exclude-standard"])
     if not ok:
         return []
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return [normalize_repo_path(line) for line in out.splitlines() if line.strip()]
 
 
 def is_agent_artifact_path(path: str) -> bool:
-    normalized = path.strip().replace("\\", "/")
+    normalized = normalize_repo_path(path)
     if not normalized:
         return False
     if normalized in AGENT_ARTIFACT_PATHS:
@@ -844,6 +944,157 @@ def is_agent_artifact_path(path: str) -> bool:
 def list_non_artifact_workspace_changes() -> list[str]:
     dirty_paths = set(list_tracked_change_files()) | set(list_untracked_files())
     return sorted(path for path in dirty_paths if not is_agent_artifact_path(path))
+
+
+def snapshot_workspace_paths(snapshot_dir: Path, paths: list[str]) -> dict[str, dict]:
+    manifest: dict[str, dict] = {}
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    for raw_path in paths:
+        normalized = normalize_repo_path(raw_path)
+        if not normalized:
+            continue
+
+        source_path = Path(normalized)
+        entry = {"exists": source_path.exists()}
+        manifest[normalized] = entry
+
+        if not entry["exists"]:
+            continue
+
+        target_path = snapshot_dir / Path(normalized)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+    return manifest
+
+
+def get_snapshot_path(restore_point: dict, path: str) -> Path:
+    return Path(restore_point["snapshot_dir"]) / Path(normalize_repo_path(path))
+
+
+def path_matches_snapshot(path: str, restore_point: dict) -> bool:
+    normalized = normalize_repo_path(path)
+    entry = restore_point.get("baseline_manifest", {}).get(normalized)
+    if entry is None:
+        return False
+
+    current_path = Path(normalized)
+    current_exists = current_path.exists()
+    if current_exists != bool(entry.get("exists")):
+        return False
+    if not current_exists:
+        return True
+
+    snapshot_path = get_snapshot_path(restore_point, normalized)
+    if not snapshot_path.exists():
+        return False
+    return current_path.read_bytes() == snapshot_path.read_bytes()
+
+
+def list_task_change_paths(restore_point: dict) -> list[str]:
+    changed_paths = []
+    for path in list_non_artifact_workspace_changes():
+        if path_matches_snapshot(path, restore_point):
+            continue
+        changed_paths.append(path)
+    return sorted(set(changed_paths))
+
+
+def read_head_file_bytes(path: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"HEAD:{normalize_repo_path(path)}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=build_cli_env(),
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def read_current_file_bytes(path: str) -> bytes | None:
+    file_path = Path(normalize_repo_path(path))
+    if not file_path.exists() or file_path.is_dir():
+        return None
+    return file_path.read_bytes()
+
+
+def read_baseline_file_bytes(path: str, restore_point: dict) -> bytes | None:
+    normalized = normalize_repo_path(path)
+    entry = restore_point.get("baseline_manifest", {}).get(normalized)
+    if entry is not None:
+        if not entry.get("exists"):
+            return None
+        snapshot_path = get_snapshot_path(restore_point, normalized)
+        if not snapshot_path.exists():
+            return None
+        return snapshot_path.read_bytes()
+    return read_head_file_bytes(normalized)
+
+
+def is_probably_text_bytes(data: bytes | None) -> bool:
+    if data is None:
+        return True
+    return b"\x00" not in data
+
+
+def decode_diff_lines(data: bytes | None) -> list[str]:
+    if data is None:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def build_task_diff(path: str, restore_point: dict) -> str:
+    normalized = normalize_repo_path(path)
+    baseline_bytes = read_baseline_file_bytes(normalized, restore_point)
+    current_bytes = read_current_file_bytes(normalized)
+
+    if baseline_bytes == current_bytes:
+        return ""
+
+    if not is_probably_text_bytes(baseline_bytes) or not is_probably_text_bytes(current_bytes):
+        change_type = "modified"
+        if baseline_bytes is None:
+            change_type = "new file"
+        elif current_bytes is None:
+            change_type = "deleted file"
+        return (
+            f"diff --task a/{normalized} b/{normalized}\n"
+            f"Binary or non-text content changed ({change_type})\n"
+        )
+
+    diff_lines = difflib.unified_diff(
+        decode_diff_lines(baseline_bytes),
+        decode_diff_lines(current_bytes),
+        fromfile=f"a/{normalized}",
+        tofile=f"b/{normalized}",
+        lineterm="",
+    )
+    return "\n".join(diff_lines)
+
+
+def restore_baseline_workspace(restore_point: dict):
+    manifest = restore_point.get("baseline_manifest", {})
+    for normalized in sorted(manifest):
+        target_path = Path(normalized)
+        entry = manifest[normalized]
+
+        if entry.get("exists"):
+            snapshot_path = get_snapshot_path(restore_point, normalized)
+            if not snapshot_path.exists():
+                raise RuntimeError(f"恢复快照缺失: {normalized}")
+            if target_path.exists() and target_path.is_dir() and not target_path.is_symlink():
+                shutil.rmtree(target_path, ignore_errors=True)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snapshot_path, target_path)
+            continue
+
+        if target_path.is_dir() and not target_path.is_symlink():
+            shutil.rmtree(target_path, ignore_errors=True)
+        else:
+            target_path.unlink(missing_ok=True)
 
 
 def classify_commit_type(desc: str) -> str:
@@ -886,19 +1137,16 @@ def build_commit_message(task: dict, changed_paths: list[str]) -> tuple[str, str
 def git_commit_task(task: dict, restore_point: dict):
     if not AUTO_COMMIT_AFTER_TASK:
         return
-    if not restore_point.get("can_auto_commit"):
-        log("⚠️", "工作区有预先存在的改动，跳过自动提交", "yellow")
-        return
-    changed_paths = list_non_artifact_workspace_changes()
+    changed_paths = list_task_change_paths(restore_point)
     if not changed_paths:
         log("💡", "本次任务没有代码改动，跳过提交", "yellow")
         return
     subject, body = build_commit_message(task, changed_paths)
-    ok, out = run_cmd(["git", "add", "-A"])
+    ok, out = run_cmd(["git", "add", "-A", "--", *changed_paths])
     if not ok:
         log("⚠️", f"git add 失败: {out[:200]}", "yellow")
         return
-    ok, out = run_cmd(["git", "commit", "-m", subject, "-m", body])
+    ok, out = run_cmd(["git", "commit", "--only", "-m", subject, "-m", body, "--", *changed_paths])
     if ok:
         log("📦", f"已提交: {subject}", "green")
     else:
@@ -912,24 +1160,20 @@ def create_restore_point(task_id: str) -> dict:
     ok, out = run_cmd(["git", "rev-parse", "HEAD"])
     tracked_source = out.strip() if ok and out.strip() else None
 
-    untracked_files = list_untracked_files()
-    untracked_archive = None
-    if untracked_files:
-        archive_path = restore_dir / "untracked.tar"
-        with tarfile.open(archive_path, "w") as tar:
-            for rel_path in untracked_files:
-                if Path(rel_path).exists():
-                    tar.add(rel_path)
-        untracked_archive = str(archive_path)
-
     preexisting_dirty_paths = list_non_artifact_workspace_changes()
+    baseline_untracked_files = [
+        path for path in list_untracked_files()
+        if not is_agent_artifact_path(path)
+    ]
+    snapshot_dir = restore_dir / "baseline"
+    baseline_manifest = snapshot_workspace_paths(snapshot_dir, preexisting_dirty_paths)
     return {
         "dir": str(restore_dir),
         "tracked_source": tracked_source,
-        "untracked_files": untracked_files,
-        "untracked_archive": untracked_archive,
         "preexisting_dirty_paths": preexisting_dirty_paths,
-        "can_auto_commit": not preexisting_dirty_paths,
+        "baseline_untracked_files": baseline_untracked_files,
+        "snapshot_dir": str(snapshot_dir),
+        "baseline_manifest": baseline_manifest,
     }
 
 
@@ -946,8 +1190,11 @@ def git_reset(restore_point: dict):
         if not ok:
             raise RuntimeError(f"恢复 tracked 文件失败:\n{out}")
 
-    baseline_untracked = set(restore_point.get("untracked_files", []))
-    current_untracked = set(list_untracked_files())
+    baseline_untracked = set(restore_point.get("baseline_untracked_files", []))
+    current_untracked = {
+        path for path in list_untracked_files()
+        if not is_agent_artifact_path(path)
+    }
     for rel_path in sorted(current_untracked - baseline_untracked, reverse=True):
         path = Path(rel_path)
         if path.is_dir() and not path.is_symlink():
@@ -955,24 +1202,21 @@ def git_reset(restore_point: dict):
         else:
             path.unlink(missing_ok=True)
 
-    archive_path = restore_point.get("untracked_archive")
-    if archive_path and Path(archive_path).exists():
-        with tarfile.open(archive_path, "r") as tar:
-            tar.extractall(".")
+    restore_baseline_workspace(restore_point)
     log("🔄", "已恢复到当前任务开始前的状态", "yellow")
 
 
 def git_diff_since(restore_point: dict) -> str:
-    tracked_source = restore_point.get("tracked_source")
-    baseline_untracked = set(restore_point.get("untracked_files", []))
-    current_untracked = [path for path in list_untracked_files() if path not in baseline_untracked]
-    if current_untracked:
-        run_cmd(["git", "add", "-N", "--", *current_untracked])
-    if tracked_source:
-        _, diff = run_cmd(["git", "diff", "--binary", tracked_source, "--"])
-    else:
-        _, diff = run_cmd(["git", "diff", "--binary", "--"])
-    return diff or "(无 diff)"
+    changed_paths = list_task_change_paths(restore_point)
+    if not changed_paths:
+        return "(无 diff)"
+
+    parts = []
+    for path in changed_paths:
+        diff = build_task_diff(path, restore_point)
+        if diff:
+            parts.append(diff)
+    return "\n".join(parts) if parts else "(无 diff)"
 
 
 # =========================
@@ -1186,7 +1430,7 @@ def requirement_to_prd(requirement: str) -> str:
 用户需求：
 {requirement}
 """
-    prd = call_codex(prompt)
+    prd = call_codex(prompt, label="Codex-PRD")
     Path(PRD_FILE).write_text(prd, encoding="utf-8")
     log("✅", f"PRD 已写入 {PRD_FILE}", "green")
     print("\n" + c("─" * 60, "cyan"))
@@ -1230,7 +1474,7 @@ def prd_to_tasks(prd: str) -> list:
 PRD：
 {prd}
 """
-    raw = call_codex(prompt)
+    raw = call_codex(prompt, label="Codex-Tasks", output_schema=CODEX_TASKS_SCHEMA)
     try:
         tasks = extract_json_payload(raw, list)
     except ValueError:
@@ -1296,7 +1540,7 @@ def execute_task(task: dict, *, tasks: list[dict], error: str = None):
 上一次尝试失败，错误信息如下，请修复：
 {error}
 """
-    call_codex(prompt)
+    call_codex(prompt, label="Codex-Exec")
 
 
 # =========================
@@ -1340,15 +1584,22 @@ PASS
 FAIL
 <具体问题和修改建议>
 """
-    output = call_codex_review(prompt)
+    output = call_codex_review(prompt, output_schema=CODEX_REVIEW_SCHEMA)
+
+    try:
+        review_payload = extract_json_payload(output, dict)
+        report_text = format_review_payload(review_payload)
+        passed = str(review_payload.get("result") or "").strip().upper() == "PASS"
+    except ValueError:
+        report_text = output
+        passed = strip_ansi(output).strip().upper().startswith("PASS")
 
     # 保存审核报告
     Path(REVIEW_DIR).mkdir(exist_ok=True)
     report_path = Path(REVIEW_DIR) / f"{task['id']}_review.txt"
-    report_path.write_text(output, encoding="utf-8")
+    report_path.write_text(report_text, encoding="utf-8")
 
-    passed = strip_ansi(output).strip().upper().startswith("PASS")
-    return passed, output
+    return passed, report_text
 
 
 # =========================
@@ -1405,7 +1656,7 @@ def diagnose_and_replan_task(task: dict, tasks: list[dict], error: str) -> bool:
   }}
 }}
 """
-    raw = call_codex(prompt)
+    raw = call_codex(prompt, label="Codex-Replan", output_schema=CODEX_REPLAN_SCHEMA)
     try:
         plan = extract_json_payload(raw, dict)
     except ValueError:

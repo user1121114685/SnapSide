@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <string_view>
@@ -31,3 +31,4 @@ private:
     Logger() = delete;
 };
 }  // namespace icon_mover
+

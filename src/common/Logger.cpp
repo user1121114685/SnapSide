@@ -1,4 +1,4 @@
-#include "common/Logger.h"
+﻿#include "common/Logger.h"
 
 #include <array>
 #include <cwchar>
@@ -24,7 +24,6 @@ struct LoggerState
     std::mutex mutex;
     std::wstring log_directory;
     std::wstring log_file_path;
-    bool initialized = false;
     bool available = false;
 };
 
@@ -309,9 +308,8 @@ bool Logger::Initialize()
     {
         std::lock_guard<std::mutex> lock(state.mutex);
 
-        if (!state.initialized)
+        if (!state.available)
         {
-            state.initialized = true;
             state.available = false;
             state.log_directory.clear();
             state.log_file_path.clear();
@@ -339,10 +337,9 @@ bool Logger::Initialize()
                     state.available = true;
                 }
             }
-
-            emit_failure = !state.available;
         }
 
+        emit_failure = !state.available;
         available = state.available;
     }
 
@@ -426,3 +423,4 @@ std::wstring Logger::GetLogFilePath()
     return state.log_file_path;
 }
 }  // namespace icon_mover
+

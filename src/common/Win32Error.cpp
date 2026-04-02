@@ -1,4 +1,4 @@
-#include "common/Win32Error.h"
+﻿#include "common/Win32Error.h"
 
 #include <cwctype>
 #include <string>
@@ -51,3 +51,4 @@ std::wstring DescribeLastWin32Error()
     return DescribeWin32Error(::GetLastError());
 }
 }  // namespace icon_mover
+
