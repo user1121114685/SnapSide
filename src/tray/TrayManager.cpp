@@ -132,6 +132,9 @@ std::optional<TrayCommand> TrayManager::HandleCommand(WPARAM w_param) const
 {
     switch (LOWORD(w_param))
     {
+    case ID_TRAY_MOVE_ICONS_NOW:
+        return TrayCommand::MoveIconsNow;
+
     case ID_TRAY_EXIT:
         return TrayCommand::ExitApplication;
 
@@ -288,8 +291,25 @@ bool TrayManager::ShowContextMenu() const
         return false;
     }
 
-    const BOOL appended = ::AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit");
-    if (appended == FALSE)
+    if (::AppendMenuW(menu, MF_STRING, ID_TRAY_MOVE_ICONS_NOW, L"Move Icons Now") == FALSE)
+    {
+        const DWORD error_code = ::GetLastError();
+        ::DestroyMenu(menu);
+        ::SetLastError(error_code);
+        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to append the Move Icons Now tray menu item.");
+        return false;
+    }
+
+    if (::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr) == FALSE)
+    {
+        const DWORD error_code = ::GetLastError();
+        ::DestroyMenu(menu);
+        ::SetLastError(error_code);
+        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to append the tray menu separator.");
+        return false;
+    }
+
+    if (::AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit") == FALSE)
     {
         const DWORD error_code = ::GetLastError();
         ::DestroyMenu(menu);

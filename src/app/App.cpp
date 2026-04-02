@@ -10,6 +10,7 @@
 
 #include "common/Logger.h"
 #include "config/ConfigManager.h"
+#include "desktop/DesktopIconMover.h"
 
 namespace icon_mover
 {
@@ -274,6 +275,24 @@ void App::DisarmAllTimers() noexcept
     DisarmTimer(TimerId::DisplayChangeDebounce);
 }
 
+bool App::ExecuteDesktopIconMove(MoveTrigger trigger)
+{
+    MoveResult move_result;
+    const bool succeeded = DesktopIconMover::Execute(trigger, state_.config.target_monitor_id, move_result);
+    state_.last_move_result = move_result;
+
+    if (move_result.outcome == MoveOutcome::Success)
+    {
+        state_.last_execution_time = move_result.executed_at;
+        if (!ConfigManager::SetLastSuccessfulMoveTime(state_.config, move_result.executed_at))
+        {
+            Logger::Warning(kRuntimePhase, L"Desktop icon move succeeded, but persisting the last successful move time failed.");
+        }
+    }
+
+    return succeeded;
+}
+
 void App::HandleTimer(UINT_PTR timer_id)
 {
     const ExplorerAvailability previous_availability = state_.explorer.availability;
@@ -290,7 +309,28 @@ void App::HandleTimer(UINT_PTR timer_id)
     switch (managed_timer_id)
     {
     case TimerId::ExplorerRetry:
+    {
+        DisarmTimer(managed_timer_id);
+
+        std::wstring message = L"Managed timer elapsed. timer=\"";
+        message += TimerName(managed_timer_id);
+        message += L"\"";
+        Logger::Info(kRuntimePhase, message);
+        return;
+    }
+
     case TimerId::FirstAutoMove:
+    {
+        DisarmTimer(managed_timer_id);
+
+        std::wstring message = L"Managed timer elapsed. timer=\"";
+        message += TimerName(managed_timer_id);
+        message += L"\"";
+        Logger::Info(kRuntimePhase, message);
+        static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::StartupAuto));
+        return;
+    }
+
     case TimerId::DisplayChangeDebounce:
     {
         DisarmTimer(managed_timer_id);
@@ -299,6 +339,7 @@ void App::HandleTimer(UINT_PTR timer_id)
         message += TimerName(managed_timer_id);
         message += L"\"";
         Logger::Info(kRuntimePhase, message);
+        static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::DisplayChange));
         return;
     }
 
@@ -462,6 +503,10 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
 
         switch (*tray_command)
         {
+        case TrayCommand::MoveIconsNow:
+            static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::ManualCommand));
+            return 0;
+
         case TrayCommand::ExitApplication:
             BeginShutdown(EXIT_SUCCESS, L"Shutdown requested from the tray icon menu.");
             return 0;

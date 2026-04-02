@@ -304,6 +304,44 @@ TargetMonitorSelection MonitorManager::ResolveTargetMonitor(
     selection.requested_monitor_id.assign(requested_monitor_id.data(), requested_monitor_id.size());
 
     const std::optional<std::size_t> secondary_index = FindFirstSecondaryMonitorIndex(topology);
+    const std::optional<std::size_t> configured_index = FindMonitorIndexById(topology, requested_monitor_id);
+    if (configured_index.has_value())
+    {
+        const MonitorInfo& configured_monitor = topology.monitors[*configured_index];
+        if (configured_monitor.is_primary)
+        {
+            if (secondary_index.has_value())
+            {
+                selection.resolved_monitor_id = topology.monitors[*secondary_index].monitor_id;
+                selection.resolution = TargetMonitorResolution::PrimaryMonitorFallback;
+
+                std::wstring message = L"Configured target monitor resolves to the primary monitor; falling back to the first non-primary monitor. requested_monitor_id=\"";
+                message.append(requested_monitor_id.data(), requested_monitor_id.size());
+                message += L"\" fallback_monitor_id=\"";
+                message += selection.resolved_monitor_id;
+                message += L"\"";
+                Logger::Warning(kMonitorPhase, message);
+                return selection;
+            }
+
+            std::wstring message = L"Configured target monitor resolves to the primary monitor, but no non-primary monitor is available. requested_monitor_id=\"";
+            message.append(requested_monitor_id.data(), requested_monitor_id.size());
+            message += L"\"";
+            Logger::Warning(kMonitorPhase, message);
+            selection.resolution = TargetMonitorResolution::Unavailable;
+            return selection;
+        }
+
+        selection.resolved_monitor_id = configured_monitor.monitor_id;
+        selection.resolution = TargetMonitorResolution::ConfiguredMonitor;
+
+        std::wstring message = L"Resolved target monitor from configuration. monitor_id=\"";
+        message += selection.resolved_monitor_id;
+        message += L"\" is_primary=false";
+        Logger::Info(kMonitorPhase, message);
+        return selection;
+    }
+
     if (!secondary_index.has_value())
     {
         std::wstring message = L"No available target monitor because no non-primary monitor is present. monitor_count=";
@@ -317,20 +355,6 @@ TargetMonitorSelection MonitorManager::ResolveTargetMonitor(
 
         Logger::Warning(kMonitorPhase, message);
         selection.resolution = TargetMonitorResolution::Unavailable;
-        return selection;
-    }
-
-    const std::optional<std::size_t> configured_index = FindMonitorIndexById(topology, requested_monitor_id);
-    if (configured_index.has_value())
-    {
-        selection.resolved_monitor_id = topology.monitors[*configured_index].monitor_id;
-        selection.resolution = TargetMonitorResolution::ConfiguredMonitor;
-
-        std::wstring message = L"Resolved target monitor from configuration. monitor_id=\"";
-        message += selection.resolved_monitor_id;
-        message += L"\" is_primary=";
-        message += BoolToString(topology.monitors[*configured_index].is_primary);
-        Logger::Info(kMonitorPhase, message);
         return selection;
     }
 

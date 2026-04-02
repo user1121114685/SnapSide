@@ -9,6 +9,7 @@ namespace icon_mover
 {
 enum class TrayCommand
 {
+    MoveIconsNow,
     ExitApplication
 };
 

@@ -36,6 +36,7 @@ private:
     bool ArmTimer(TimerId timer_id, UINT interval_ms);
     void DisarmTimer(TimerId timer_id) noexcept;
     void DisarmAllTimers() noexcept;
+    bool ExecuteDesktopIconMove(MoveTrigger trigger);
     void HandleTimer(UINT_PTR timer_id);
     void HandleDisplayChange(UINT bits_per_pixel, int width, int height);
     bool RefreshDesktopViewContext();
