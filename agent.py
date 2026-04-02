@@ -351,7 +351,7 @@ configure_utf8_console()
 TASK_FILE    = "tasks.json"
 PRD_FILE     = "prd.txt"
 REVIEW_DIR   = "reviews"
-MAX_RETRY    = 3
+MAX_RETRY    = 5
 CODEX_MODEL  = "gpt-5.4"
 AUTO_COMMIT_AFTER_TASK = True
 
@@ -1927,7 +1927,8 @@ def main():
                         print(trim_text(test_output, 800))
                         error = f"构建验证失败：\n{trim_text(test_output, 5000)}"
                         task["last_error"] = trim_text(error, 5000)
-                        git_reset(restore_point)
+                        if attempt >= 4:
+                            git_reset(restore_point)
                         continue
 
                     diff = git_diff_since(restore_point)
@@ -1940,7 +1941,8 @@ def main():
                         log("❌", "Codex 审核不通过，准备重试", "red")
                         error = f"Codex 代码审核不通过，修复建议：\n{trim_text(review_text, 5000)}"
                         task["last_error"] = trim_text(error, 5000)
-                        git_reset(restore_point)
+                        if attempt >= 4:
+                            git_reset(restore_point)
                         continue
 
                     success = True
