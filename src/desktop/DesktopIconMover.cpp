@@ -170,6 +170,11 @@ bool WindowClassEquals(HWND window, std::wstring_view expected_class) noexcept
                TRUE) == CSTR_EQUAL;
 }
 
+bool PointInRect(const RECT& rect, const POINT& point) noexcept
+{
+    return ::PtInRect(&rect, point) != FALSE;
+}
+
 HWND FindDesktopHostWindow(HWND progman_window) noexcept
 {
     if (progman_window != nullptr)
@@ -281,6 +286,69 @@ void LogTargetMonitorSelection(const MonitorInfo& monitor, const TargetMonitorSe
     message += L" work_area=";
     message += RectToString(monitor.work_area_rect);
     Logger::Info(kDesktopMovePhase, message);
+}
+
+bool InspectCurrentIconPlacement(
+    const DesktopViewAccessor& desktop_view_accessor,
+    const RECT& target_work_area,
+    int icon_count,
+    int& icons_inside_target,
+    int& first_outside_icon_index,
+    POINT& first_outside_position)
+{
+    icons_inside_target = 0;
+    first_outside_icon_index = -1;
+    first_outside_position = {};
+
+    for (int icon_index = 0; icon_index < icon_count; ++icon_index)
+    {
+        POINT current_position = {};
+        if (!desktop_view_accessor.GetIconPosition(icon_index, current_position))
+        {
+            return false;
+        }
+
+        if (!PointInRect(target_work_area, current_position))
+        {
+            first_outside_icon_index = icon_index;
+            first_outside_position = current_position;
+            return true;
+        }
+
+        ++icons_inside_target;
+    }
+
+    return true;
+}
+
+bool TryArrangeIconsByItemType(
+    DesktopViewAccessor& desktop_view_accessor,
+    const MonitorInfo& target_monitor,
+    MoveResult& result,
+    int attempt_index)
+{
+    Logger::Info(
+        kDesktopMovePhase,
+        L"All desktop icons are already inside the target monitor work area; arranging by item type instead of moving every icon again. attempt=" +
+            BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + target_monitor.monitor_id + L"\"");
+
+    if (!desktop_view_accessor.SortIconsByItemType())
+    {
+        const DWORD arrange_error = ResolveErrorCode();
+        Logger::Warning(
+            kDesktopMovePhase,
+            L"Arranging desktop icons by item type failed; falling back to the full move path. attempt=" +
+                BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + target_monitor.monitor_id + L"\" " +
+                DescribeWin32Error(arrange_error));
+        result.last_error = arrange_error;
+        return false;
+    }
+
+    result.outcome = MoveOutcome::Success;
+    result.skip_reason = MoveSkipReason::None;
+    result.executed_at = std::chrono::system_clock::now();
+    result.last_error = ERROR_SUCCESS;
+    return true;
 }
 
 void LogFinalResult(const MoveResult& result, int attempt_count)
@@ -462,6 +530,45 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
             L"Skipping desktop icon move because the desktop contains no icons. attempt=" + BuildAttemptLabel(attempt_index) +
                 L" target_monitor_id=\"" + result.target_monitor_id + L"\"");
         return false;
+    }
+
+    int icons_inside_target = 0;
+    int first_outside_icon_index = -1;
+    POINT first_outside_position = {};
+    if (InspectCurrentIconPlacement(
+            desktop_view_accessor,
+            target_monitor->work_area_rect,
+            result.icon_count,
+            icons_inside_target,
+            first_outside_icon_index,
+            first_outside_position))
+    {
+        if (icons_inside_target == result.icon_count)
+        {
+            if (TryArrangeIconsByItemType(desktop_view_accessor, *target_monitor, result, attempt_index))
+            {
+                return true;
+            }
+        }
+        else
+        {
+            Logger::Info(
+                kDesktopMovePhase,
+                L"Desktop icons are not fully inside the target monitor work area yet; continuing with the full move path. attempt=" +
+                    BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + result.target_monitor_id + L"\" icons_inside_target=" +
+                    std::to_wstring(icons_inside_target) + L"/" + std::to_wstring(result.icon_count) +
+                    L" first_outside_icon_index=" + std::to_wstring(first_outside_icon_index) + L" first_outside_position=" +
+                    PointToString(first_outside_position));
+        }
+    }
+    else
+    {
+        const DWORD placement_inspection_error = ResolveErrorCode();
+        Logger::Warning(
+            kDesktopMovePhase,
+            L"Failed to inspect the current desktop icon positions; falling back to the full move path. attempt=" +
+                BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + result.target_monitor_id + L"\" " +
+                DescribeWin32Error(placement_inspection_error));
     }
 
     IconLayoutResult layout;

@@ -25,7 +25,9 @@ public:
 
     bool IsReady() const noexcept;
     bool GetIconCount(int& icon_count) const;
+    bool GetIconPosition(int icon_index, POINT& position) const;
     bool ForEachIconIndex(const IconIndexVisitor& visitor) const;
+    bool SortIconsByItemType();
 
 private:
     bool EnsureComInitialized();
