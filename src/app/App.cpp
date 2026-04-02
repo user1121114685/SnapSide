@@ -8,6 +8,7 @@
 
 #include <commctrl.h>
 
+#include "autostart/AutoStartManager.h"
 #include "common/Logger.h"
 #include "config/ConfigManager.h"
 #include "desktop/DesktopIconMover.h"
@@ -19,6 +20,11 @@ namespace
 constexpr wchar_t kBootstrapPhase[] = L"bootstrap";
 constexpr wchar_t kRuntimePhase[] = L"runtime";
 constexpr wchar_t kShutdownPhase[] = L"shutdown";
+
+std::wstring BoolToString(bool value)
+{
+    return value ? L"true" : L"false";
+}
 
 const wchar_t* TimerName(TimerId timer_id)
 {
@@ -57,6 +63,58 @@ void SetTimerArmedState(TimerState& timer_state, TimerId timer_id, bool armed) n
     default:
         return;
     }
+}
+
+const wchar_t* FirstAutoMoveStateName(FirstAutoMoveState state) noexcept
+{
+    switch (state)
+    {
+    case FirstAutoMoveState::Pending:
+        return L"pending";
+
+    case FirstAutoMoveState::WaitingForExplorer:
+        return L"waiting_for_explorer";
+
+    case FirstAutoMoveState::ReadyToRun:
+        return L"ready_to_run";
+
+    case FirstAutoMoveState::Running:
+        return L"running";
+
+    case FirstAutoMoveState::Completed:
+        return L"completed";
+
+    case FirstAutoMoveState::Failed:
+        return L"failed";
+
+    default:
+        return L"unknown";
+    }
+}
+
+const wchar_t* MoveOutcomeName(MoveOutcome outcome) noexcept
+{
+    switch (outcome)
+    {
+    case MoveOutcome::Success:
+        return L"success";
+
+    case MoveOutcome::Skipped:
+        return L"skipped";
+
+    case MoveOutcome::Failed:
+        return L"failed";
+
+    default:
+        return L"unknown";
+    }
+}
+
+bool IsExplorerReady(const AppState& state) noexcept
+{
+    return state.explorer.availability == ExplorerAvailability::Ready &&
+           state.explorer.desktop_list_view_window != nullptr &&
+           ::IsWindow(state.explorer.desktop_list_view_window) != FALSE;
 }
 
 const wchar_t* CurrentPhase(const AppState& state) noexcept
@@ -105,6 +163,8 @@ bool App::Initialize()
         Logger::Info(kBootstrapPhase, message);
     }
 
+    Logger::Info(kBootstrapPhase, L"Application startup sequence begins.");
+
     if (launch_options_.log_test_error)
     {
         ::SetLastError(ERROR_INVALID_PARAMETER);
@@ -147,6 +207,16 @@ bool App::Initialize()
         return false;
     }
 
+    if (!LoadAutoStartStatus())
+    {
+        Logger::Warning(kBootstrapPhase, L"Auto-start status query failed; continuing with the cached disabled state.");
+    }
+
+    if (!StartExplorerReadinessWait())
+    {
+        return false;
+    }
+
     state_.lifecycle = AppLifecycleState::Running;
     Logger::Info(kBootstrapPhase, L"Application bootstrap completed.");
     return true;
@@ -163,6 +233,30 @@ bool App::LoadConfiguration()
     message += L"\"";
     Logger::Info(kBootstrapPhase, message);
     return loaded_cleanly;
+}
+
+bool App::LoadAutoStartStatus()
+{
+    AutoStartStatus auto_start_status;
+    if (!AutoStartManager::Query(auto_start_status))
+    {
+        state_.auto_start_enabled = false;
+        return false;
+    }
+
+    state_.auto_start_enabled = auto_start_status.enabled && auto_start_status.matches_current_executable;
+
+    std::wstring message = L"Auto-start status loaded. enabled=\"";
+    message += BoolToString(auto_start_status.enabled);
+    message += L"\" matches_current_executable=\"";
+    message += BoolToString(auto_start_status.matches_current_executable);
+    message += L"\" effective_enabled=\"";
+    message += BoolToString(state_.auto_start_enabled);
+    message += L"\" command_line=\"";
+    message += auto_start_status.command_line;
+    message += L"\"";
+    Logger::Info(kBootstrapPhase, message);
+    return true;
 }
 
 bool App::ApplyStartupConfigOverrides()
@@ -207,6 +301,24 @@ bool App::CreateMessageWindow()
     std::wstring message = L"Hidden message window created. hwnd=";
     message += std::to_wstring(reinterpret_cast<UINT_PTR>(message_window_.Handle()));
     Logger::Info(kBootstrapPhase, message);
+    return true;
+}
+
+bool App::StartExplorerReadinessWait()
+{
+    state_.first_auto_move_state = FirstAutoMoveState::WaitingForExplorer;
+
+    Logger::Info(kBootstrapPhase, L"Starting Explorer readiness wait.");
+
+    const ExplorerAvailability previous_availability = state_.explorer.availability;
+    const HWND previous_list_view_window = state_.explorer.desktop_list_view_window;
+    if (!explorer_watcher_.Start(message_window_.Handle(), state_.explorer, state_.timers))
+    {
+        Logger::Error(kBootstrapPhase, L"Failed to start the Explorer readiness watcher.");
+        return false;
+    }
+
+    HandleExplorerStateUpdate(previous_availability, previous_list_view_window);
     return true;
 }
 
@@ -293,6 +405,38 @@ bool App::ExecuteDesktopIconMove(MoveTrigger trigger)
     return succeeded;
 }
 
+bool App::ScheduleFirstAutoMove(UINT interval_ms, std::wstring_view reason)
+{
+    if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
+    {
+        return true;
+    }
+
+    if (state_.timers.first_auto_move_armed)
+    {
+        return true;
+    }
+
+    const FirstAutoMoveState previous_state = state_.first_auto_move_state;
+    state_.first_auto_move_state = FirstAutoMoveState::ReadyToRun;
+
+    if (!ArmTimer(TimerId::FirstAutoMove, interval_ms))
+    {
+        state_.first_auto_move_state = FirstAutoMoveState::Failed;
+        return false;
+    }
+
+    std::wstring message = L"Startup automatic desktop icon move scheduled. previous_state=\"";
+    message += FirstAutoMoveStateName(previous_state);
+    message += L"\" delay_ms=";
+    message += std::to_wstring(interval_ms);
+    message += L" reason=\"";
+    message.append(reason.data(), reason.size());
+    message += L"\"";
+    Logger::Info(CurrentPhase(state_), message);
+    return true;
+}
+
 void App::HandleTimer(UINT_PTR timer_id)
 {
     const ExplorerAvailability previous_availability = state_.explorer.availability;
@@ -300,7 +444,7 @@ void App::HandleTimer(UINT_PTR timer_id)
 
     if (explorer_watcher_.HandleTimer(timer_id, state_.explorer, state_.timers))
     {
-        SyncDesktopViewAccessor(previous_availability, previous_list_view_window);
+        HandleExplorerStateUpdate(previous_availability, previous_list_view_window);
         return;
     }
 
@@ -321,13 +465,7 @@ void App::HandleTimer(UINT_PTR timer_id)
 
     case TimerId::FirstAutoMove:
     {
-        DisarmTimer(managed_timer_id);
-
-        std::wstring message = L"Managed timer elapsed. timer=\"";
-        message += TimerName(managed_timer_id);
-        message += L"\"";
-        Logger::Info(kRuntimePhase, message);
-        static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::StartupAuto));
+        HandleFirstAutoMoveTimer();
         return;
     }
 
@@ -358,6 +496,78 @@ void App::HandleTimer(UINT_PTR timer_id)
     }
 }
 
+void App::HandleFirstAutoMoveTimer()
+{
+    DisarmTimer(TimerId::FirstAutoMove);
+
+    std::wstring message = L"Managed timer elapsed. timer=\"";
+    message += TimerName(TimerId::FirstAutoMove);
+    message += L"\"";
+    Logger::Info(CurrentPhase(state_), message);
+
+    if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
+    {
+        Logger::Info(CurrentPhase(state_), L"Ignoring the startup automatic move timer because the first automatic move already completed.");
+        return;
+    }
+
+    if (!IsExplorerReady(state_))
+    {
+        Logger::Warning(
+            CurrentPhase(state_),
+            L"Startup automatic move timer fired before Explorer was ready; resuming Explorer readiness wait.");
+
+        state_.first_auto_move_state = FirstAutoMoveState::WaitingForExplorer;
+
+        const ExplorerAvailability previous_availability = state_.explorer.availability;
+        const HWND previous_list_view_window = state_.explorer.desktop_list_view_window;
+        if (!explorer_watcher_.Start(message_window_.Handle(), state_.explorer, state_.timers))
+        {
+            Logger::Warning(CurrentPhase(state_), L"Failed to restart the Explorer readiness watcher after the startup automatic move timer.");
+            state_.first_auto_move_state = FirstAutoMoveState::Failed;
+            static_cast<void>(ScheduleFirstAutoMove(kExplorerRetryIntervalMs, L"explorer_wait_restart_failed"));
+            return;
+        }
+
+        HandleExplorerStateUpdate(previous_availability, previous_list_view_window);
+        return;
+    }
+
+    state_.first_auto_move_state = FirstAutoMoveState::Running;
+    Logger::Info(CurrentPhase(state_), L"Executing the startup automatic desktop icon move.");
+
+    static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::StartupAuto));
+
+    if (!state_.last_move_result.has_value())
+    {
+        state_.first_auto_move_state = FirstAutoMoveState::Failed;
+        Logger::Warning(CurrentPhase(state_), L"Startup automatic desktop icon move did not produce a result; scheduling retry.");
+        static_cast<void>(ScheduleFirstAutoMove(kExplorerRetryIntervalMs, L"missing_move_result"));
+        return;
+    }
+
+    const MoveResult& move_result = *state_.last_move_result;
+    std::wstring result_message = L"Startup automatic desktop icon move finished. outcome=\"";
+    result_message += MoveOutcomeName(move_result.outcome);
+    result_message += L"\" target_monitor_id=\"";
+    result_message += move_result.target_monitor_id;
+    result_message += L"\" icon_count=";
+    result_message += std::to_wstring(move_result.icon_count);
+    result_message += L" last_error=";
+    result_message += std::to_wstring(move_result.last_error);
+
+    if (move_result.outcome == MoveOutcome::Failed)
+    {
+        state_.first_auto_move_state = FirstAutoMoveState::Failed;
+        Logger::Warning(CurrentPhase(state_), result_message + L"; scheduling retry.");
+        static_cast<void>(ScheduleFirstAutoMove(kExplorerRetryIntervalMs, L"previous_attempt_failed"));
+        return;
+    }
+
+    state_.first_auto_move_state = FirstAutoMoveState::Completed;
+    Logger::Info(CurrentPhase(state_), result_message);
+}
+
 void App::HandleDisplayChange(UINT bits_per_pixel, int width, int height)
 {
     std::wstring message = L"WM_DISPLAYCHANGE received. bits_per_pixel=";
@@ -372,6 +582,62 @@ void App::HandleDisplayChange(UINT bits_per_pixel, int width, int height)
     {
         Logger::Warning(kRuntimePhase, L"Display change debounce timer was not armed.");
     }
+}
+
+void App::HandleExplorerStateUpdate(ExplorerAvailability previous_availability, HWND previous_list_view_window)
+{
+    SyncDesktopViewAccessor(previous_availability, previous_list_view_window);
+
+    if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
+    {
+        return;
+    }
+
+    if (!IsExplorerReady(state_))
+    {
+        if (state_.timers.first_auto_move_armed)
+        {
+            DisarmTimer(TimerId::FirstAutoMove);
+            Logger::Warning(
+                CurrentPhase(state_),
+                L"Explorer became unavailable before the startup automatic move executed; cancelled the pending automatic move.");
+        }
+
+        if (state_.first_auto_move_state != FirstAutoMoveState::WaitingForExplorer &&
+            state_.first_auto_move_state != FirstAutoMoveState::Running)
+        {
+            state_.first_auto_move_state = FirstAutoMoveState::WaitingForExplorer;
+        }
+
+        return;
+    }
+
+    if (state_.first_auto_move_state == FirstAutoMoveState::Running || state_.timers.first_auto_move_armed)
+    {
+        return;
+    }
+
+    const bool became_ready = previous_availability != ExplorerAvailability::Ready;
+    const bool list_view_changed = previous_list_view_window != state_.explorer.desktop_list_view_window;
+    if (!became_ready && !list_view_changed && state_.first_auto_move_state == FirstAutoMoveState::ReadyToRun)
+    {
+        return;
+    }
+
+    std::wstring reason = L"explorer_ready";
+    UINT interval_ms = kFirstAutoMoveDelayMs;
+
+    if (state_.first_auto_move_state == FirstAutoMoveState::Failed)
+    {
+        reason = L"explorer_ready_after_failure";
+        interval_ms = kExplorerRetryIntervalMs;
+    }
+    else if (list_view_changed && !became_ready)
+    {
+        reason = L"desktop_list_view_changed";
+    }
+
+    static_cast<void>(ScheduleFirstAutoMove(interval_ms, reason));
 }
 
 bool App::RefreshDesktopViewContext()
@@ -461,6 +727,8 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
 
 std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
+    static_cast<void>(window);
+
     if (tray_manager_.IsTaskbarCreatedMessage(message))
     {
         if (!tray_manager_.HandleTaskbarCreated())
@@ -475,14 +743,6 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
     {
     case WM_CREATE:
         Logger::Info(kBootstrapPhase, L"Hidden message window is ready.");
-
-        if (!explorer_watcher_.Start(window, state_.explorer, state_.timers))
-        {
-            Logger::Error(kBootstrapPhase, L"Failed to start the Explorer readiness watcher.");
-        }
-
-        SyncDesktopViewAccessor(ExplorerAvailability::Unknown, nullptr);
-
         return 0;
 
     case WM_TIMER:

@@ -30,15 +30,20 @@ public:
 private:
     bool Initialize();
     bool LoadConfiguration();
+    bool LoadAutoStartStatus();
     bool ApplyStartupConfigOverrides();
     bool CreateMessageWindow();
+    bool StartExplorerReadinessWait();
     int MessageLoop();
     bool ArmTimer(TimerId timer_id, UINT interval_ms);
     void DisarmTimer(TimerId timer_id) noexcept;
     void DisarmAllTimers() noexcept;
     bool ExecuteDesktopIconMove(MoveTrigger trigger);
+    bool ScheduleFirstAutoMove(UINT interval_ms, std::wstring_view reason);
     void HandleTimer(UINT_PTR timer_id);
+    void HandleFirstAutoMoveTimer();
     void HandleDisplayChange(UINT bits_per_pixel, int width, int height);
+    void HandleExplorerStateUpdate(ExplorerAvailability previous_availability, HWND previous_list_view_window);
     bool RefreshDesktopViewContext();
     void SyncDesktopViewAccessor(ExplorerAvailability previous_availability, HWND previous_list_view_window);
     void BeginShutdown(int exit_code, std::wstring_view reason);
