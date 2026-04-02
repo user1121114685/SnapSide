@@ -1,5 +1,10 @@
 ﻿cmake_minimum_required(VERSION 3.21)
 
+if(NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 project(IconMover VERSION 0.1.0 LANGUAGES CXX RC)
 
 if(NOT WIN32)

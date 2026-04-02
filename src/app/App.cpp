@@ -10,6 +10,7 @@
 
 #include "app/CommandHandler.h"
 #include "common/Logger.h"
+#include "common/Win32Error.h"
 #include "config/ConfigManager.h"
 #include "desktop/DesktopIconMover.h"
 #include "monitor/MonitorManager.h"
@@ -23,6 +24,23 @@ constexpr wchar_t kRuntimePhase[] = L"runtime";
 constexpr wchar_t kShutdownPhase[] = L"shutdown";
 constexpr UINT kMaxDisplayChangeMoveAttempts = 4;
 constexpr ULONGLONG kDisplayChangeMoveTimeoutMs = 15000;
+
+void ConfigureProcessDpiAwareness()
+{
+    if (::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE)
+    {
+        Logger::Info(kBootstrapPhase, L"Configured the process for per-monitor DPI awareness (V2).");
+        return;
+    }
+
+    const DWORD error_code = ::GetLastError();
+    std::wstring message =
+        L"SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) failed; continuing with the current DPI awareness. ";
+    message += DescribeWin32Error(error_code);
+    Logger::Warning(
+        kBootstrapPhase,
+        message);
+}
 
 const wchar_t* TimerName(TimerId timer_id)
 {
@@ -252,6 +270,7 @@ bool App::Initialize()
         Logger::Info(kBootstrapPhase, message);
     }
 
+    ConfigureProcessDpiAwareness();
     Logger::Info(kBootstrapPhase, L"Application startup sequence begins.");
 
     if (launch_options_.log_test_error)
