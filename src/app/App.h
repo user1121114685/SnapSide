@@ -8,7 +8,9 @@
 
 #include "app/MessageWindow.h"
 #include "core/AppState.h"
+#include "desktop/DesktopViewAccessor.h"
 #include "explorer/ExplorerWatcher.h"
+#include "tray/TrayManager.h"
 
 namespace icon_mover
 {
@@ -36,6 +38,8 @@ private:
     void DisarmAllTimers() noexcept;
     void HandleTimer(UINT_PTR timer_id);
     void HandleDisplayChange(UINT bits_per_pixel, int width, int height);
+    bool RefreshDesktopViewContext();
+    void SyncDesktopViewAccessor(ExplorerAvailability previous_availability, HWND previous_list_view_window);
     void BeginShutdown(int exit_code, std::wstring_view reason);
 
     std::optional<LRESULT> OnMessageWindowMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param) override;
@@ -45,6 +49,8 @@ private:
     AppState state_;
     MessageWindow message_window_;
     ExplorerWatcher explorer_watcher_;
+    DesktopViewAccessor desktop_view_accessor_;
+    TrayManager tray_manager_;
     int exit_code_;
     bool shutdown_requested_;
 };

@@ -57,6 +57,11 @@ void SetTimerArmedState(TimerState& timer_state, TimerId timer_id, bool armed) n
         return;
     }
 }
+
+const wchar_t* CurrentPhase(const AppState& state) noexcept
+{
+    return state.lifecycle == AppLifecycleState::Bootstrap ? kBootstrapPhase : kRuntimePhase;
+}
 }  // namespace
 
 App::App(HINSTANCE instance, LaunchOptions options) noexcept
@@ -132,6 +137,12 @@ bool App::Initialize()
 
     if (!CreateMessageWindow())
     {
+        return false;
+    }
+
+    if (!tray_manager_.Initialize(instance_, message_window_.Handle()))
+    {
+        Logger::Error(kBootstrapPhase, L"Failed to initialize the tray icon manager.");
         return false;
     }
 
@@ -265,8 +276,12 @@ void App::DisarmAllTimers() noexcept
 
 void App::HandleTimer(UINT_PTR timer_id)
 {
+    const ExplorerAvailability previous_availability = state_.explorer.availability;
+    const HWND previous_list_view_window = state_.explorer.desktop_list_view_window;
+
     if (explorer_watcher_.HandleTimer(timer_id, state_.explorer, state_.timers))
     {
+        SyncDesktopViewAccessor(previous_availability, previous_list_view_window);
         return;
     }
 
@@ -318,6 +333,65 @@ void App::HandleDisplayChange(UINT bits_per_pixel, int width, int height)
     }
 }
 
+bool App::RefreshDesktopViewContext()
+{
+    const wchar_t* phase = CurrentPhase(state_);
+    const HWND desktop_list_view_window = state_.explorer.desktop_list_view_window;
+
+    if (desktop_list_view_window == nullptr)
+    {
+        desktop_view_accessor_.Reset();
+        return false;
+    }
+
+    if (!desktop_view_accessor_.Refresh(desktop_list_view_window))
+    {
+        Logger::Warning(phase, L"Failed to refresh the desktop shell view accessor for the current Explorer desktop.");
+        return false;
+    }
+
+    int icon_count = 0;
+    if (!desktop_view_accessor_.GetIconCount(icon_count))
+    {
+        desktop_view_accessor_.Reset();
+        Logger::Warning(phase, L"Desktop shell view refresh succeeded, but reading the desktop icon count failed.");
+        return false;
+    }
+
+    std::wstring message = L"Desktop view accessor refreshed. desktop_list_view=";
+    message += std::to_wstring(reinterpret_cast<UINT_PTR>(desktop_list_view_window));
+    message += L" icon_count=";
+    message += std::to_wstring(icon_count);
+    Logger::Info(phase, message);
+    return true;
+}
+
+void App::SyncDesktopViewAccessor(ExplorerAvailability previous_availability, HWND previous_list_view_window)
+{
+    const bool explorer_ready = state_.explorer.availability == ExplorerAvailability::Ready &&
+                                state_.explorer.desktop_list_view_window != nullptr;
+
+    if (!explorer_ready)
+    {
+        if (previous_availability == ExplorerAvailability::Ready || previous_list_view_window != nullptr ||
+            desktop_view_accessor_.IsReady())
+        {
+            desktop_view_accessor_.Reset();
+        }
+
+        return;
+    }
+
+    const bool became_ready = previous_availability != ExplorerAvailability::Ready;
+    const bool list_view_changed = previous_list_view_window != state_.explorer.desktop_list_view_window;
+    if (!became_ready && !list_view_changed && desktop_view_accessor_.IsReady())
+    {
+        return;
+    }
+
+    static_cast<void>(RefreshDesktopViewContext());
+}
+
 void App::BeginShutdown(int exit_code, std::wstring_view reason)
 {
     if (shutdown_requested_)
@@ -329,6 +403,8 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
     exit_code_ = exit_code;
     state_.lifecycle = AppLifecycleState::ShuttingDown;
     DisarmAllTimers();
+    desktop_view_accessor_.Reset();
+    tray_manager_.Shutdown();
     Logger::Info(kShutdownPhase, reason);
 
     const HWND window = message_window_.Handle();
@@ -344,6 +420,16 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
 
 std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
+    if (tray_manager_.IsTaskbarCreatedMessage(message))
+    {
+        if (!tray_manager_.HandleTaskbarCreated())
+        {
+            Logger::Warning(kRuntimePhase, L"Failed to restore the tray icon after Explorer recreated the taskbar.");
+        }
+
+        return 0;
+    }
+
     switch (message)
     {
     case WM_CREATE:
@@ -353,6 +439,8 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
         {
             Logger::Error(kBootstrapPhase, L"Failed to start the Explorer readiness watcher.");
         }
+
+        SyncDesktopViewAccessor(ExplorerAvailability::Unknown, nullptr);
 
         return 0;
 
@@ -364,8 +452,26 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
         HandleDisplayChange(static_cast<UINT>(w_param), LOWORD(l_param), HIWORD(l_param));
         return 0;
 
+    case WM_COMMAND:
+    {
+        const std::optional<TrayCommand> tray_command = tray_manager_.HandleCommand(w_param);
+        if (!tray_command.has_value())
+        {
+            return std::nullopt;
+        }
+
+        switch (*tray_command)
+        {
+        case TrayCommand::ExitApplication:
+            BeginShutdown(EXIT_SUCCESS, L"Shutdown requested from the tray icon menu.");
+            return 0;
+        }
+
+        return 0;
+    }
+
     case kTrayIconMessage:
-        Logger::Info(kRuntimePhase, L"Tray callback message received without an active tray icon.");
+        tray_manager_.HandleCallbackMessage(l_param);
         return 0;
 
     case kShutdownApplicationMessage:

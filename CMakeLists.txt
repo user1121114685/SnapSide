@@ -28,12 +28,16 @@ add_executable(IconMover WIN32
     src/app/MessageWindow.h
     src/config/ConfigManager.cpp
     src/config/ConfigManager.h
+    src/desktop/DesktopViewAccessor.cpp
+    src/desktop/DesktopViewAccessor.h
     src/explorer/ExplorerWatcher.cpp
     src/explorer/ExplorerWatcher.h
     src/monitor/MonitorManager.cpp
     src/monitor/MonitorManager.h
     src/monitor/MonitorWorkArea.cpp
     src/monitor/MonitorWorkArea.h
+    src/tray/TrayManager.cpp
+    src/tray/TrayManager.h
     src/core/AppState.h
     src/core/Constants.h
     src/core/Models.h
@@ -41,6 +45,8 @@ add_executable(IconMover WIN32
     src/common/Logger.h
     src/common/Win32Error.cpp
     src/common/Win32Error.h
+    src/resource/app.rc
+    src/resource/resource.h
     include/IconMover/Version.h
 )
 
@@ -76,6 +82,8 @@ target_link_libraries(IconMover
         user32
         gdi32
         comctl32
+        ole32
+        uuid
 )
 
 set_target_properties(IconMover PROPERTIES
