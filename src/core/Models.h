@@ -20,6 +20,7 @@ struct MonitorInfo final
     std::wstring monitor_id;
     bool is_primary = false;
     RECT monitor_rect = {};
+    RECT raw_work_area_rect = {};
     RECT work_area_rect = {};
 };
 
@@ -27,6 +28,7 @@ struct VirtualScreenInfo final
 {
     RECT bounds = {};
     RECT system_work_area = {};
+    bool has_system_work_area = false;
     int monitor_count = 0;
     bool has_secondary_monitor = false;
 };
