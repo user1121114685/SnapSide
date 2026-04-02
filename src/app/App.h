@@ -8,6 +8,7 @@
 
 #include "app/MessageWindow.h"
 #include "core/AppState.h"
+#include "explorer/ExplorerWatcher.h"
 
 namespace icon_mover
 {
@@ -43,6 +44,7 @@ private:
     LaunchOptions launch_options_;
     AppState state_;
     MessageWindow message_window_;
+    ExplorerWatcher explorer_watcher_;
     int exit_code_;
     bool shutdown_requested_;
 };

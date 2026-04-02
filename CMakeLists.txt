@@ -28,6 +28,8 @@ add_executable(IconMover WIN32
     src/app/MessageWindow.h
     src/config/ConfigManager.cpp
     src/config/ConfigManager.h
+    src/explorer/ExplorerWatcher.cpp
+    src/explorer/ExplorerWatcher.h
     src/monitor/MonitorManager.cpp
     src/monitor/MonitorManager.h
     src/monitor/MonitorWorkArea.cpp

@@ -258,13 +258,18 @@ void App::DisarmTimer(TimerId timer_id) noexcept
 
 void App::DisarmAllTimers() noexcept
 {
-    DisarmTimer(TimerId::ExplorerRetry);
+    explorer_watcher_.Stop(state_.timers);
     DisarmTimer(TimerId::FirstAutoMove);
     DisarmTimer(TimerId::DisplayChangeDebounce);
 }
 
 void App::HandleTimer(UINT_PTR timer_id)
 {
+    if (explorer_watcher_.HandleTimer(timer_id, state_.explorer, state_.timers))
+    {
+        return;
+    }
+
     const auto managed_timer_id = static_cast<TimerId>(timer_id);
 
     switch (managed_timer_id)
@@ -337,12 +342,18 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
     }
 }
 
-std::optional<LRESULT> App::OnMessageWindowMessage(HWND, UINT message, WPARAM w_param, LPARAM l_param)
+std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
     switch (message)
     {
     case WM_CREATE:
         Logger::Info(kBootstrapPhase, L"Hidden message window is ready.");
+
+        if (!explorer_watcher_.Start(window, state_.explorer, state_.timers))
+        {
+            Logger::Error(kBootstrapPhase, L"Failed to start the Explorer readiness watcher.");
+        }
+
         return 0;
 
     case WM_TIMER:
