@@ -1,4 +1,4 @@
-#include "autostart/AutoStartManager.h"
+﻿#include "autostart/AutoStartManager.h"
 
 #include <string>
 #include <string_view>
@@ -123,7 +123,7 @@ std::wstring DescribeRunValueSnapshot(const RunValueSnapshot& snapshot)
     description += L" value_type=";
     description += std::to_wstring(snapshot.type);
     description += L" value_size_bytes=";
-    description += std::to_wstring(snapshot.data.size());
+    description += std::to_wstring(static_cast<unsigned long long>(snapshot.data.size()));
 
     if (IsStringValueType(snapshot.type))
     {
@@ -218,15 +218,18 @@ DWORD GetCurrentExecutablePath(std::wstring& path)
     path.clear();
 
     std::wstring buffer(static_cast<std::size_t>(MAX_PATH), L'\0');
-    while (buffer.size() < 32768)
+    constexpr std::size_t kMaxModulePathLength = 32768;
+
+    while (buffer.size() <= kMaxModulePathLength)
     {
-        const DWORD copied = ::GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        const DWORD buffer_capacity = static_cast<DWORD>(buffer.size());
+        const DWORD copied = ::GetModuleFileNameW(nullptr, buffer.data(), buffer_capacity);
         if (copied == 0)
         {
             return ::GetLastError();
         }
 
-        if (copied < buffer.size())
+        if (copied < buffer_capacity)
         {
             buffer.resize(copied);
             path = std::move(buffer);
@@ -256,7 +259,7 @@ DWORD BuildCurrentExecutableCommandLine(std::wstring& command_line)
     return ERROR_SUCCESS;
 }
 
-DWORD WriteRunValue(HKEY key, std::wstring_view command_line)
+DWORD WriteRunValue(HKEY key, const std::wstring& command_line)
 {
     const DWORD byte_count = static_cast<DWORD>((command_line.size() + 1) * sizeof(wchar_t));
     const LSTATUS status = ::RegSetValueExW(
@@ -307,7 +310,8 @@ bool PopulateStatusFromSnapshot(
     status.enabled = snapshot.exists;
     status.command_line = snapshot.string_value;
     status.matches_current_executable =
-        snapshot.exists && IsStringValueType(snapshot.type) && EqualsCaseInsensitive(snapshot.string_value, current_command_line);
+        !current_command_line.empty() && snapshot.exists && IsStringValueType(snapshot.type) &&
+        EqualsCaseInsensitive(snapshot.string_value, current_command_line);
     return true;
 }
 
