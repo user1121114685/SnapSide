@@ -360,7 +360,7 @@ AUTO_TEST_TIMEOUT_SEC       = int(os.environ.get("AGENT_AUTO_TEST_TIMEOUT_SEC", 
 CODEX_TOTAL_TIMEOUT_SEC     = int(os.environ.get("AGENT_CODEX_TIMEOUT_SEC", 1800))
 CODEX_IDLE_TIMEOUT_SEC      = int(os.environ.get("AGENT_CODEX_IDLE_TIMEOUT_SEC", 600))
 REVIEW_TOTAL_TIMEOUT_SEC    = int(os.environ.get("AGENT_REVIEW_TIMEOUT_SEC", 600))
-REVIEW_IDLE_TIMEOUT_SEC     = int(os.environ.get("AGENT_REVIEW_IDLE_TIMEOUT_SEC", 180))
+REVIEW_IDLE_TIMEOUT_SEC     = int(os.environ.get("AGENT_REVIEW_IDLE_TIMEOUT_SEC", 600))
 TASK_REPLAN_LIMIT           = int(os.environ.get("AGENT_TASK_REPLAN_LIMIT", 2))
 TASK_CONTEXT_WINDOW         = int(os.environ.get("AGENT_TASK_CONTEXT_WINDOW", 2))
 REPO_CONTEXT_SAMPLE_LIMIT   = int(os.environ.get("AGENT_REPO_CONTEXT_SAMPLE_LIMIT", 12))
@@ -596,7 +596,7 @@ def run_streaming_cmd(
     return {"returncode": process.returncode, "output": "".join(lines).strip(), "guard_reason": guard_reason}
 
 
-def run_cmd(cmd, cwd=None, timeout=CMD_TIMEOUT_SEC):
+def run_cmd_capture(cmd, cwd=None, timeout=CMD_TIMEOUT_SEC):
     use_shell = isinstance(cmd, str)
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -609,11 +609,17 @@ def run_cmd(cmd, cwd=None, timeout=CMD_TIMEOUT_SEC):
     except subprocess.TimeoutExpired:
         terminate_process_tree(process)
         stdout, stderr = process.communicate()
-        return False, f"[命令执行超时: {timeout}s]\n{stdout}{stderr}".strip()
+        timeout_note = f"[命令执行超时: {timeout}s]\n"
+        return False, stdout, f"{timeout_note}{stderr}".strip()
     except KeyboardInterrupt:
         terminate_process_tree(process)
         raise
-    return process.returncode == 0, stdout + stderr
+    return process.returncode == 0, stdout, stderr
+
+
+def run_cmd(cmd, cwd=None, timeout=CMD_TIMEOUT_SEC):
+    ok, stdout, stderr = run_cmd_capture(cmd, cwd=cwd, timeout=timeout)
+    return ok, stdout + stderr
 
 
 def resolve_cli(name: str) -> str:
@@ -912,21 +918,55 @@ def normalize_repo_path(path: str) -> str:
     return path.strip().replace("\\", "/")
 
 
+def sanitize_repo_path_candidate(path: str) -> str | None:
+    normalized = normalize_repo_path(path)
+    if not normalized:
+        return None
+
+    lowered = normalized.lower()
+    if lowered.startswith(("warning:", "error:", "fatal:", "hint:", "note:")):
+        return None
+
+    if normalized.startswith("/") or normalized.startswith("../"):
+        return None
+
+    parts = normalized.split("/")
+    invalid_chars = '<>:"|?*'
+    for part in parts:
+        if not part or part in (".", ".."):
+            return None
+        if any(ch in part for ch in invalid_chars):
+            return None
+    return normalized
+
+
+def parse_nul_delimited_paths(raw: str) -> list[str]:
+    paths = []
+    for item in raw.split("\0"):
+        normalized = sanitize_repo_path_candidate(item)
+        if normalized:
+            paths.append(normalized)
+    return paths
+
+
 def list_tracked_change_files() -> list[str]:
     changed = set()
-    for cmd in (["git", "diff", "--name-only"], ["git", "diff", "--cached", "--name-only"]):
-        ok, out = run_cmd(cmd)
-        if not ok and not out:
+    for cmd in (
+        ["git", "diff", "--name-only", "-z"],
+        ["git", "diff", "--cached", "--name-only", "-z"],
+    ):
+        ok, stdout, _stderr = run_cmd_capture(cmd)
+        if not ok and not stdout:
             continue
-        changed.update(normalize_repo_path(line) for line in out.splitlines() if line.strip())
+        changed.update(parse_nul_delimited_paths(stdout))
     return sorted(changed)
 
 
 def list_untracked_files() -> list[str]:
-    ok, out = run_cmd(["git", "ls-files", "--others", "--exclude-standard"])
+    ok, stdout, _stderr = run_cmd_capture(["git", "ls-files", "-z", "--others", "--exclude-standard"])
     if not ok:
         return []
-    return [normalize_repo_path(line) for line in out.splitlines() if line.strip()]
+    return parse_nul_delimited_paths(stdout)
 
 
 def is_agent_artifact_path(path: str) -> bool:
@@ -951,7 +991,7 @@ def snapshot_workspace_paths(snapshot_dir: Path, paths: list[str]) -> dict[str, 
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     for raw_path in paths:
-        normalized = normalize_repo_path(raw_path)
+        normalized = sanitize_repo_path_candidate(raw_path)
         if not normalized:
             continue
 
@@ -1077,9 +1117,13 @@ def build_task_diff(path: str, restore_point: dict) -> str:
 
 def restore_baseline_workspace(restore_point: dict):
     manifest = restore_point.get("baseline_manifest", {})
-    for normalized in sorted(manifest):
+    for raw_path in sorted(manifest):
+        normalized = sanitize_repo_path_candidate(raw_path)
+        if not normalized:
+            continue
+
         target_path = Path(normalized)
-        entry = manifest[normalized]
+        entry = manifest[raw_path]
 
         if entry.get("exists"):
             snapshot_path = get_snapshot_path(restore_point, normalized)
@@ -1196,7 +1240,11 @@ def git_reset(restore_point: dict):
         if not is_agent_artifact_path(path)
     }
     for rel_path in sorted(current_untracked - baseline_untracked, reverse=True):
-        path = Path(rel_path)
+        normalized = sanitize_repo_path_candidate(rel_path)
+        if not normalized:
+            continue
+
+        path = Path(normalized)
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path, ignore_errors=True)
         else:

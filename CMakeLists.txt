@@ -22,6 +22,8 @@ add_executable(IconMover WIN32
     src/main.cpp
     src/app/App.cpp
     src/app/App.h
+    src/autostart/AutoStartManager.cpp
+    src/autostart/AutoStartManager.h
     src/app/MessageWindow.cpp
     src/app/MessageWindow.h
     src/config/ConfigManager.cpp
