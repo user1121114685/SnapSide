@@ -159,6 +159,10 @@ bool CommandHandler::HandleTrayCommand(
         }
 
         const bool requested_enabled = !state.auto_start_enabled;
+        Logger::Info(
+            log_phase,
+            L"Applying tray auto-start toggle. requested_enabled=\"" + BoolToString(requested_enabled) +
+                L"\" previous_enabled=\"" + BoolToString(state.auto_start_enabled) + L"\"");
         if (!AutoStartManager::SetEnabled(requested_enabled))
         {
             static_cast<void>(RefreshAutoStartState(state, log_phase));
@@ -166,7 +170,15 @@ bool CommandHandler::HandleTrayCommand(
             return false;
         }
 
-        return RefreshAutoStartState(state, log_phase);
+        const bool refreshed = RefreshAutoStartState(state, log_phase);
+        if (refreshed)
+        {
+            Logger::Info(
+                log_phase,
+                L"Tray auto-start toggle completed. effective_enabled=\"" + BoolToString(state.auto_start_enabled) + L"\"");
+        }
+
+        return refreshed;
     }
 
     case TrayCommandType::SelectTargetMonitor:
@@ -203,6 +215,11 @@ bool CommandHandler::HandleTrayCommand(
         }
 
         state.target_monitor = MonitorManager::ResolveTargetMonitor(state.monitor_topology, state.config.target_monitor_id);
+        Logger::Info(
+            log_phase,
+            L"Tray target monitor selection persisted. requested_monitor_id=\"" + command.target_monitor_id +
+                L"\" resolved_monitor_id=\"" + state.target_monitor.resolved_monitor_id + L"\" resolution=\"" +
+                ToString(state.target_monitor.resolution) + L"\"");
         result.should_execute_move = true;
         result.move_trigger = MoveTrigger::TargetMonitorChanged;
         return true;

@@ -429,12 +429,12 @@
       "cmake -S . -B build",
       "cmake --build build --config Release"
     ],
-    "status": "todo",
-    "retries": 0,
+    "status": "done",
+    "retries": 1,
     "replans": 0,
-    "review_result": null,
+    "review_result": "PASS",
     "blocked_by": [],
     "last_error": "",
-    "diagnosis": ""
+    "diagnosis": "Recorded release regression evidence in reviews/task_017_validation_summary.md. This session could not force a physical monitor hot-unplug, so the downgrade and display-change acceptance items were covered through the equivalent INVALID_MONITOR fallback and WM_DISPLAYCHANGE runtime paths."
   }
 ]

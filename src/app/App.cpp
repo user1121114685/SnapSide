@@ -108,6 +108,30 @@ const wchar_t* MoveOutcomeName(MoveOutcome outcome) noexcept
     }
 }
 
+const wchar_t* MoveTriggerName(MoveTrigger trigger) noexcept
+{
+    switch (trigger)
+    {
+    case MoveTrigger::StartupAuto:
+        return L"startup_auto";
+
+    case MoveTrigger::ManualCommand:
+        return L"manual_command";
+
+    case MoveTrigger::DisplayChange:
+        return L"display_change";
+
+    case MoveTrigger::TargetMonitorChanged:
+        return L"target_monitor_changed";
+
+    case MoveTrigger::ExplorerRecovered:
+        return L"explorer_recovered";
+
+    default:
+        return L"unknown";
+    }
+}
+
 const wchar_t* MoveSkipReasonName(MoveSkipReason reason) noexcept
 {
     switch (reason)
@@ -174,6 +198,11 @@ const wchar_t* CurrentPhase(const AppState& state) noexcept
 {
     return state.lifecycle == AppLifecycleState::Bootstrap ? kBootstrapPhase : kRuntimePhase;
 }
+
+const wchar_t* BoolName(bool value) noexcept
+{
+    return value ? L"true" : L"false";
+}
 }  // namespace
 
 App::App(HINSTANCE instance, LaunchOptions options) noexcept
@@ -198,13 +227,14 @@ int App::Run()
     {
         state_.lifecycle = AppLifecycleState::ShuttingDown;
         Logger::Error(kBootstrapPhase, L"Application initialization failed.");
+        BeginShutdown(EXIT_FAILURE, L"Shutting down after initialization failure.");
         return EXIT_FAILURE;
     }
 
     if (launch_options_.set_target_monitor_id.has_value())
     {
         state_.lifecycle = AppLifecycleState::ShuttingDown;
-        Logger::Info(kShutdownPhase, L"Startup configuration update completed; exiting without entering the message loop.");
+        BeginShutdown(EXIT_SUCCESS, L"Startup configuration update completed; exiting without entering the message loop.");
         return EXIT_SUCCESS;
     }
 
@@ -372,12 +402,13 @@ int App::MessageLoop()
         if (result == -1)
         {
             Logger::LogLastError(LogLevel::Error, kRuntimePhase, L"GetMessageW failed.");
+            BeginShutdown(EXIT_FAILURE, L"Shutting down because the message loop encountered a fatal GetMessageW error.");
             return EXIT_FAILURE;
         }
 
         if (result == 0)
         {
-            Logger::Info(kShutdownPhase, L"Message loop exited.");
+            Logger::Info(kShutdownPhase, L"Message loop exited. exit_code=" + std::to_wstring(static_cast<int>(message.wParam)));
             return static_cast<int>(message.wParam);
         }
 
@@ -429,6 +460,13 @@ void App::DisarmAllTimers() noexcept
 
 bool App::ExecuteDesktopIconMove(MoveTrigger trigger)
 {
+    std::wstring start_message = L"Dispatching desktop icon move from the application coordinator. trigger=\"";
+    start_message += MoveTriggerName(trigger);
+    start_message += L"\" configured_target_monitor_id=\"";
+    start_message += state_.config.target_monitor_id;
+    start_message += L"\"";
+    Logger::Info(CurrentPhase(state_), start_message);
+
     MoveResult move_result;
     const bool succeeded = DesktopIconMover::Execute(trigger, state_.config.target_monitor_id, move_result);
     state_.last_move_result = move_result;
@@ -440,6 +478,34 @@ bool App::ExecuteDesktopIconMove(MoveTrigger trigger)
         {
             Logger::Warning(kRuntimePhase, L"Desktop icon move succeeded, but persisting the last successful move time failed.");
         }
+    }
+
+    std::wstring finish_message = L"Application coordinator completed the desktop icon move. trigger=\"";
+    finish_message += MoveTriggerName(trigger);
+    finish_message += L"\" succeeded=\"";
+    finish_message += BoolName(succeeded);
+    finish_message += L"\" outcome=\"";
+    finish_message += MoveOutcomeName(move_result.outcome);
+    finish_message += L"\" skip_reason=\"";
+    finish_message += MoveSkipReasonName(move_result.skip_reason);
+    finish_message += L"\" target_monitor_id=\"";
+    finish_message += move_result.target_monitor_id;
+    finish_message += L"\" icon_count=";
+    finish_message += std::to_wstring(move_result.icon_count);
+    finish_message += L" last_error=";
+    finish_message += std::to_wstring(move_result.last_error);
+
+    if (move_result.outcome == MoveOutcome::Success)
+    {
+        Logger::Info(CurrentPhase(state_), finish_message);
+    }
+    else if (move_result.outcome == MoveOutcome::Skipped)
+    {
+        Logger::Warning(CurrentPhase(state_), finish_message);
+    }
+    else
+    {
+        Logger::Error(CurrentPhase(state_), finish_message);
     }
 
     return succeeded;
@@ -1089,20 +1155,42 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
         return;
     }
 
+    std::wstring message = L"Shutdown sequence begins. exit_code=";
+    message += std::to_wstring(exit_code);
+    message += L" reason=\"";
+    message.append(reason.data(), reason.size());
+    message += L"\" first_auto_move_state=\"";
+    message += FirstAutoMoveStateName(state_.first_auto_move_state);
+    message += L"\" display_change_session_active=\"";
+    message += BoolName(display_change_move_session_active_);
+    message += L"\" pending_display_change_move=\"";
+    message += BoolName(pending_display_change_move_);
+    message += L"\" explorer_retry_armed=\"";
+    message += BoolName(state_.timers.explorer_retry_armed);
+    message += L"\" first_auto_move_armed=\"";
+    message += BoolName(state_.timers.first_auto_move_armed);
+    message += L"\" display_change_debounce_armed=\"";
+    message += BoolName(state_.timers.display_change_debounce_armed);
+    message += L"\" message_window_available=\"";
+    message += BoolName(message_window_.Handle() != nullptr);
+    message += L"\"";
+    Logger::Info(kShutdownPhase, message);
+
     shutdown_requested_ = true;
     exit_code_ = exit_code;
     state_.lifecycle = AppLifecycleState::ShuttingDown;
+    display_change_move_session_active_ = false;
+    pending_display_change_move_ = false;
+    suppress_immediate_display_change_move_ = false;
+    display_change_started_tick_ = 0;
+    display_change_move_attempt_count_ = 0;
     DisarmAllTimers();
     desktop_view_accessor_.Reset();
     tray_manager_.Shutdown();
-    Logger::Info(kShutdownPhase, reason);
 
-    const HWND window = message_window_.Handle();
-    if (window != nullptr)
-    {
-        ::DestroyWindow(window);
-    }
-    else
+    const bool had_window = message_window_.Handle() != nullptr;
+    message_window_.Destroy();
+    if (!had_window)
     {
         ::PostQuitMessage(exit_code_);
     }

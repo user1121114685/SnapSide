@@ -1,6 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.21)
 
-project(IconMover VERSION 0.1.0 LANGUAGES CXX)
+project(IconMover VERSION 0.1.0 LANGUAGES CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "IconMover requires Windows.")
@@ -96,6 +96,7 @@ target_link_libraries(IconMover
 
 set_target_properties(IconMover PROPERTIES
     OUTPUT_NAME "IconMover"
+    VERSION "${PROJECT_VERSION}"
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
