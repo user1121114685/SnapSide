@@ -22,6 +22,8 @@ add_executable(IconMover WIN32
     src/main.cpp
     src/app/App.cpp
     src/app/App.h
+    src/app/CommandHandler.cpp
+    src/app/CommandHandler.h
     src/autostart/AutoStartManager.cpp
     src/autostart/AutoStartManager.h
     src/app/MessageWindow.cpp
@@ -40,6 +42,8 @@ add_executable(IconMover WIN32
     src/monitor/MonitorManager.h
     src/monitor/MonitorWorkArea.cpp
     src/monitor/MonitorWorkArea.h
+    src/tray/TrayMenuBuilder.cpp
+    src/tray/TrayMenuBuilder.h
     src/tray/TrayManager.cpp
     src/tray/TrayManager.h
     src/core/AppState.h

@@ -8,7 +8,7 @@
 
 #include <commctrl.h>
 
-#include "autostart/AutoStartManager.h"
+#include "app/CommandHandler.h"
 #include "common/Logger.h"
 #include "config/ConfigManager.h"
 #include "desktop/DesktopIconMover.h"
@@ -20,11 +20,6 @@ namespace
 constexpr wchar_t kBootstrapPhase[] = L"bootstrap";
 constexpr wchar_t kRuntimePhase[] = L"runtime";
 constexpr wchar_t kShutdownPhase[] = L"shutdown";
-
-std::wstring BoolToString(bool value)
-{
-    return value ? L"true" : L"false";
-}
 
 const wchar_t* TimerName(TimerId timer_id)
 {
@@ -237,26 +232,7 @@ bool App::LoadConfiguration()
 
 bool App::LoadAutoStartStatus()
 {
-    AutoStartStatus auto_start_status;
-    if (!AutoStartManager::Query(auto_start_status))
-    {
-        state_.auto_start_enabled = false;
-        return false;
-    }
-
-    state_.auto_start_enabled = auto_start_status.enabled && auto_start_status.matches_current_executable;
-
-    std::wstring message = L"Auto-start status loaded. enabled=\"";
-    message += BoolToString(auto_start_status.enabled);
-    message += L"\" matches_current_executable=\"";
-    message += BoolToString(auto_start_status.matches_current_executable);
-    message += L"\" effective_enabled=\"";
-    message += BoolToString(state_.auto_start_enabled);
-    message += L"\" command_line=\"";
-    message += auto_start_status.command_line;
-    message += L"\"";
-    Logger::Info(kBootstrapPhase, message);
-    return true;
+    return CommandHandler::RefreshAutoStartState(state_, kBootstrapPhase);
 }
 
 bool App::ApplyStartupConfigOverrides()
@@ -761,23 +737,45 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
             return std::nullopt;
         }
 
-        switch (*tray_command)
+        CommandDispatchResult dispatch_result;
+        if (!CommandHandler::HandleTrayCommand(*tray_command, state_, kRuntimePhase, dispatch_result))
         {
-        case TrayCommand::MoveIconsNow:
-            static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::ManualCommand));
             return 0;
+        }
 
-        case TrayCommand::ExitApplication:
+        if (dispatch_result.should_execute_move)
+        {
+            static_cast<void>(ExecuteDesktopIconMove(dispatch_result.move_trigger));
+        }
+
+        if (dispatch_result.should_exit)
+        {
             BeginShutdown(EXIT_SUCCESS, L"Shutdown requested from the tray icon menu.");
-            return 0;
         }
 
         return 0;
     }
 
     case kTrayIconMessage:
-        tray_manager_.HandleCallbackMessage(l_param);
+    {
+        if (tray_manager_.HandleCallbackMessage(l_param) == TrayCallbackAction::ShowContextMenu)
+        {
+            static_cast<void>(CommandHandler::RefreshTrayState(state_, kRuntimePhase));
+
+            TrayMenuContext menu_context = {};
+            menu_context.monitor_topology = &state_.monitor_topology;
+            menu_context.target_monitor = &state_.target_monitor;
+            menu_context.auto_start_enabled = state_.auto_start_enabled;
+            menu_context.auto_start_status_available = state_.auto_start_status_available;
+
+            if (!tray_manager_.ShowContextMenu(menu_context))
+            {
+                Logger::Warning(kRuntimePhase, L"Failed to show the tray context menu.");
+            }
+        }
+
         return 0;
+    }
 
     case kShutdownApplicationMessage:
         BeginShutdown(static_cast<int>(w_param), L"Shutdown requested through the custom application message.");

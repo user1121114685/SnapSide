@@ -32,6 +32,7 @@ struct AppState final
     ExplorerWindowState explorer;
     TimerState timers;
     bool auto_start_enabled = false;
+    bool auto_start_status_available = false;
     FirstAutoMoveState first_auto_move_state = FirstAutoMoveState::Pending;
     std::optional<Timestamp> last_execution_time;
     std::optional<MoveResult> last_move_result;

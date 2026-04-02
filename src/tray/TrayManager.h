@@ -1,16 +1,48 @@
 ﻿#pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <windows.h>
 #include <shellapi.h>
 
+#include "core/Models.h"
+
 namespace icon_mover
 {
-enum class TrayCommand
+enum class TrayCallbackAction
+{
+    None,
+    ShowContextMenu
+};
+
+enum class TrayCommandType
 {
     MoveIconsNow,
+    ToggleAutoStart,
+    SelectTargetMonitor,
     ExitApplication
+};
+
+struct TrayCommand final
+{
+    TrayCommandType type = TrayCommandType::MoveIconsNow;
+    std::wstring target_monitor_id;
+};
+
+struct TrayMenuContext final
+{
+    const MonitorTopology* monitor_topology = nullptr;
+    const TargetMonitorSelection* target_monitor = nullptr;
+    bool auto_start_enabled = false;
+    bool auto_start_status_available = false;
+};
+
+struct TrayMenuMonitorCommand final
+{
+    UINT command_id = 0;
+    std::wstring monitor_id;
 };
 
 class TrayManager final
@@ -29,8 +61,9 @@ public:
 
     [[nodiscard]] bool IsTaskbarCreatedMessage(UINT message) const noexcept;
     [[nodiscard]] bool HandleTaskbarCreated();
-    void HandleCallbackMessage(LPARAM l_param);
+    [[nodiscard]] TrayCallbackAction HandleCallbackMessage(LPARAM l_param) const noexcept;
     [[nodiscard]] std::optional<TrayCommand> HandleCommand(WPARAM w_param) const;
+    bool ShowContextMenu(const TrayMenuContext& context);
 
 private:
     bool EnsureOwnerWindow(HWND owner_window);
@@ -38,7 +71,6 @@ private:
     bool AddTrayIcon();
     bool SetTrayIconVersion();
     bool DeleteTrayIcon() noexcept;
-    bool ShowContextMenu() const;
     void FillNotifyIconData(NOTIFYICONDATAW& notify_icon_data) const noexcept;
     void ReleaseTrayIcon() noexcept;
     static DWORD ResolveNotifyIconError() noexcept;
@@ -49,5 +81,6 @@ private:
     UINT taskbar_created_message_ = 0;
     bool tray_icon_added_ = false;
     bool owns_tray_icon_ = false;
+    std::vector<TrayMenuMonitorCommand> dynamic_monitor_commands_;
 };
 }  // namespace icon_mover

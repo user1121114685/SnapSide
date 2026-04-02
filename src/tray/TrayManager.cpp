@@ -11,6 +11,7 @@
 #include "common/Win32Error.h"
 #include "core/Constants.h"
 #include "resource/resource.h"
+#include "tray/TrayMenuBuilder.h"
 
 namespace icon_mover
 {
@@ -84,6 +85,7 @@ void TrayManager::Shutdown() noexcept
 {
     static_cast<void>(DeleteTrayIcon());
     ReleaseTrayIcon();
+    dynamic_monitor_commands_.clear();
     taskbar_created_message_ = 0;
     owner_window_ = nullptr;
     instance_ = nullptr;
@@ -107,11 +109,11 @@ bool TrayManager::HandleTaskbarCreated()
     return AddTrayIcon();
 }
 
-void TrayManager::HandleCallbackMessage(LPARAM l_param)
+TrayCallbackAction TrayManager::HandleCallbackMessage(LPARAM l_param) const noexcept
 {
     if (!tray_icon_added_)
     {
-        return;
+        return TrayCallbackAction::None;
     }
 
     const UINT notification_code = LOWORD(static_cast<DWORD_PTR>(l_param));
@@ -120,27 +122,40 @@ void TrayManager::HandleCallbackMessage(LPARAM l_param)
     case WM_CONTEXTMENU:
     case WM_RBUTTONUP:
     case NIN_KEYSELECT:
-        static_cast<void>(ShowContextMenu());
-        return;
+        return TrayCallbackAction::ShowContextMenu;
 
     default:
-        return;
+        return TrayCallbackAction::None;
     }
 }
 
 std::optional<TrayCommand> TrayManager::HandleCommand(WPARAM w_param) const
 {
-    switch (LOWORD(w_param))
+    const UINT command_id = LOWORD(w_param);
+    switch (command_id)
     {
     case ID_TRAY_MOVE_ICONS_NOW:
-        return TrayCommand::MoveIconsNow;
+        return TrayCommand{TrayCommandType::MoveIconsNow, std::wstring()};
+
+    case ID_TRAY_TOGGLE_AUTO_START:
+        return TrayCommand{TrayCommandType::ToggleAutoStart, std::wstring()};
 
     case ID_TRAY_EXIT:
-        return TrayCommand::ExitApplication;
+        return TrayCommand{TrayCommandType::ExitApplication, std::wstring()};
 
     default:
-        return std::nullopt;
+        break;
     }
+
+    for (const TrayMenuMonitorCommand& monitor_command : dynamic_monitor_commands_)
+    {
+        if (monitor_command.command_id == command_id)
+        {
+            return TrayCommand{TrayCommandType::SelectTargetMonitor, monitor_command.monitor_id};
+        }
+    }
+
+    return std::nullopt;
 }
 
 bool TrayManager::EnsureOwnerWindow(HWND owner_window)
@@ -277,7 +292,7 @@ bool TrayManager::DeleteTrayIcon() noexcept
     return true;
 }
 
-bool TrayManager::ShowContextMenu() const
+bool TrayManager::ShowContextMenu(const TrayMenuContext& context)
 {
     if (owner_window_ == nullptr || ::IsWindow(owner_window_) == FALSE)
     {
@@ -291,30 +306,13 @@ bool TrayManager::ShowContextMenu() const
         return false;
     }
 
-    if (::AppendMenuW(menu, MF_STRING, ID_TRAY_MOVE_ICONS_NOW, L"Move Icons Now") == FALSE)
+    dynamic_monitor_commands_.clear();
+    if (!TrayMenuBuilder::PopulateMenu(menu, context, dynamic_monitor_commands_))
     {
         const DWORD error_code = ::GetLastError();
         ::DestroyMenu(menu);
         ::SetLastError(error_code);
-        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to append the Move Icons Now tray menu item.");
-        return false;
-    }
-
-    if (::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr) == FALSE)
-    {
-        const DWORD error_code = ::GetLastError();
-        ::DestroyMenu(menu);
-        ::SetLastError(error_code);
-        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to append the tray menu separator.");
-        return false;
-    }
-
-    if (::AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Exit") == FALSE)
-    {
-        const DWORD error_code = ::GetLastError();
-        ::DestroyMenu(menu);
-        ::SetLastError(error_code);
-        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to append the Exit tray menu item.");
+        Logger::LogLastError(LogLevel::Error, kTrayPhase, L"Failed to build the tray context menu.");
         return false;
     }
 
@@ -349,7 +347,10 @@ bool TrayManager::ShowContextMenu() const
         return false;
     }
 
-    Logger::Info(kTrayPhase, L"Tray context menu requested.");
+    Logger::Info(
+        kTrayPhase,
+        L"Tray context menu requested. target_monitor_commands=" +
+            std::to_wstring(static_cast<unsigned long long>(dynamic_monitor_commands_.size())));
     return true;
 }
 
