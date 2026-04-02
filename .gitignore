@@ -1,6 +1,4 @@
 /.agent_restore
 /__pycache__
-/build
-/build_review
-/build_nmake
+/build*/
 /reviews

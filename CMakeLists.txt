@@ -30,6 +30,8 @@ add_executable(IconMover WIN32
     src/config/ConfigManager.h
     src/desktop/DesktopViewAccessor.cpp
     src/desktop/DesktopViewAccessor.h
+    src/desktop/IconLayoutCalculator.cpp
+    src/desktop/IconLayoutCalculator.h
     src/explorer/ExplorerWatcher.cpp
     src/explorer/ExplorerWatcher.h
     src/monitor/MonitorManager.cpp
