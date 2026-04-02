@@ -40,11 +40,18 @@ struct MonitorTopology final
     std::optional<std::size_t> primary_monitor_index;
 };
 
+enum class TrayMenuLanguage
+{
+    English,
+    ChineseSimplified
+};
+
 struct AppConfig final
 {
     std::wstring target_monitor_id;
     std::optional<Timestamp> last_successful_move_time;
     std::wstring log_level = L"info";
+    TrayMenuLanguage tray_menu_language = TrayMenuLanguage::English;
 };
 
 enum class AppLifecycleState

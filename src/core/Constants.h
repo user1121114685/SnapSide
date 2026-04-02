@@ -23,4 +23,5 @@ inline constexpr wchar_t kConfigSectionGeneral[] = L"general";
 inline constexpr wchar_t kConfigKeyTargetMonitorId[] = L"target_monitor_id";
 inline constexpr wchar_t kConfigKeyLastSuccessfulMoveUtc[] = L"last_successful_move_utc";
 inline constexpr wchar_t kConfigKeyLogLevel[] = L"log_level";
+inline constexpr wchar_t kConfigKeyTrayMenuLanguage[] = L"tray_menu_language";
 }  // namespace icon_mover

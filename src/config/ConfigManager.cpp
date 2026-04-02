@@ -26,6 +26,57 @@ constexpr wchar_t kConfigPhase[] = L"config";
 constexpr std::array<unsigned char, 3> kUtf8Bom = {0xEF, 0xBB, 0xBF};
 constexpr ULONGLONG kWindowsToUnixEpochTicks = 116444736000000000ULL;
 
+const wchar_t* ToConfigValue(TrayMenuLanguage tray_menu_language) noexcept
+{
+    switch (tray_menu_language)
+    {
+    case TrayMenuLanguage::ChineseSimplified:
+        return L"zh-CN";
+
+    case TrayMenuLanguage::English:
+    default:
+        return L"en";
+    }
+}
+
+bool EqualsCaseInsensitive(std::wstring_view left, std::wstring_view right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+
+    for (size_t index = 0; index < left.size(); ++index)
+    {
+        if (towlower(left[index]) != towlower(right[index]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool TryParseTrayMenuLanguage(std::wstring_view value, TrayMenuLanguage& tray_menu_language)
+{
+    if (EqualsCaseInsensitive(value, L"en") || EqualsCaseInsensitive(value, L"english"))
+    {
+        tray_menu_language = TrayMenuLanguage::English;
+        return true;
+    }
+
+    if (EqualsCaseInsensitive(value, L"zh") ||
+        EqualsCaseInsensitive(value, L"zh-cn") ||
+        EqualsCaseInsensitive(value, L"zh-hans") ||
+        EqualsCaseInsensitive(value, L"chinese"))
+    {
+        tray_menu_language = TrayMenuLanguage::ChineseSimplified;
+        return true;
+    }
+
+    return false;
+}
+
 AppConfig BuildDefaultConfig()
 {
     return AppConfig{};
@@ -510,7 +561,9 @@ bool BuildConfigText(const AppConfig& config, std::wstring& text)
     }
 
     text.clear();
-    text.reserve(256 + normalized.target_monitor_id.size() + normalized.log_level.size());
+    text.reserve(
+        256 + normalized.target_monitor_id.size() + normalized.log_level.size() +
+        wcslen(ToConfigValue(normalized.tray_menu_language)));
     text += L"[";
     text += kConfigSectionGeneral;
     text += L"]\r\n";
@@ -521,6 +574,10 @@ bool BuildConfigText(const AppConfig& config, std::wstring& text)
     text += kConfigKeyLastSuccessfulMoveUtc;
     text += L"=";
     text += last_successful_move_value;
+    text += L"\r\n";
+    text += kConfigKeyTrayMenuLanguage;
+    text += L"=";
+    text += ToConfigValue(normalized.tray_menu_language);
     text += L"\r\n";
     text += kConfigKeyLogLevel;
     text += L"=";
@@ -615,6 +672,39 @@ bool TryParseConfigText(std::wstring_view text, AppConfig& config, std::wstring&
 
                                 std::wstring issue = L"Invalid ";
                                 issue += kConfigKeyLastSuccessfulMoveUtc;
+                                issue += L" value on line ";
+                                issue += std::to_wstring(line_number);
+                                issue += L".";
+                                AppendIssue(issues, issue);
+                            }
+                        }
+                    }
+                    else if (key == std::wstring_view(kConfigKeyTrayMenuLanguage))
+                    {
+                        if (value.empty())
+                        {
+                            parsed.tray_menu_language = TrayMenuLanguage::English;
+
+                            std::wstring issue = L"Empty ";
+                            issue += kConfigKeyTrayMenuLanguage;
+                            issue += L" value on line ";
+                            issue += std::to_wstring(line_number);
+                            issue += L".";
+                            AppendIssue(issues, issue);
+                        }
+                        else
+                        {
+                            TrayMenuLanguage parsed_language = TrayMenuLanguage::English;
+                            if (TryParseTrayMenuLanguage(value, parsed_language))
+                            {
+                                parsed.tray_menu_language = parsed_language;
+                            }
+                            else
+                            {
+                                parsed.tray_menu_language = TrayMenuLanguage::English;
+
+                                std::wstring issue = L"Invalid ";
+                                issue += kConfigKeyTrayMenuLanguage;
                                 issue += L" value on line ";
                                 issue += std::to_wstring(line_number);
                                 issue += L".";
@@ -833,7 +923,8 @@ bool ConfigManager::Load(AppConfig& config)
 
     Logger::Info(
         kConfigPhase,
-        L"Configuration loaded. path=\"" + config_path + L"\" target_monitor_id=\"" + config.target_monitor_id + L"\"");
+        L"Configuration loaded. path=\"" + config_path + L"\" target_monitor_id=\"" + config.target_monitor_id +
+            L"\" tray_menu_language=\"" + ToConfigValue(config.tray_menu_language) + L"\"");
     return true;
 }
 
@@ -876,6 +967,27 @@ bool ConfigManager::SetTargetMonitorId(AppConfig& config, std::wstring_view targ
 
     const AppConfig previous_config = config;
     config.target_monitor_id.assign(target_monitor_id.data(), target_monitor_id.size());
+
+    if (Save(config))
+    {
+        return true;
+    }
+
+    config = previous_config;
+    return false;
+}
+
+bool ConfigManager::SetTrayMenuLanguage(AppConfig& config, TrayMenuLanguage tray_menu_language)
+{
+    NormalizeConfig(config);
+
+    if (config.tray_menu_language == tray_menu_language)
+    {
+        return true;
+    }
+
+    const AppConfig previous_config = config;
+    config.tray_menu_language = tray_menu_language;
 
     if (Save(config))
     {

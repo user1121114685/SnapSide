@@ -22,6 +22,7 @@ enum class TrayCommandType
     MoveIconsNow,
     ToggleAutoStart,
     SelectTargetMonitor,
+    SetTrayMenuLanguage,
     ExitApplication
 };
 
@@ -29,6 +30,7 @@ struct TrayCommand final
 {
     TrayCommandType type = TrayCommandType::MoveIconsNow;
     std::wstring target_monitor_id;
+    std::optional<TrayMenuLanguage> tray_menu_language;
 };
 
 struct TrayMenuContext final
@@ -37,6 +39,7 @@ struct TrayMenuContext final
     const TargetMonitorSelection* target_monitor = nullptr;
     bool auto_start_enabled = false;
     bool auto_start_status_available = false;
+    TrayMenuLanguage tray_menu_language = TrayMenuLanguage::English;
 };
 
 struct TrayMenuMonitorCommand final

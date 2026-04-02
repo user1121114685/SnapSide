@@ -319,6 +319,8 @@ bool App::LoadConfiguration()
 
     std::wstring message = L"Configuration ready. target_monitor_id=\"";
     message += state_.config.target_monitor_id;
+    message += L"\" tray_menu_language=\"";
+    message += state_.config.tray_menu_language == TrayMenuLanguage::ChineseSimplified ? L"zh-CN" : L"en";
     message += L"\"";
     Logger::Info(kBootstrapPhase, message);
     return loaded_cleanly;
@@ -1238,7 +1240,11 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
             return 0;
         }
 
-        if (dispatch_result.should_execute_move)
+        const bool tray_command_can_trigger_move =
+            tray_command->type == TrayCommandType::MoveIconsNow ||
+            tray_command->type == TrayCommandType::SelectTargetMonitor;
+
+        if (dispatch_result.should_execute_move && tray_command_can_trigger_move)
         {
             static_cast<void>(ExecuteDesktopIconMove(dispatch_result.move_trigger));
         }
@@ -1262,6 +1268,7 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
             menu_context.target_monitor = &state_.target_monitor;
             menu_context.auto_start_enabled = state_.auto_start_enabled;
             menu_context.auto_start_status_available = state_.auto_start_status_available;
+            menu_context.tray_menu_language = state_.config.tray_menu_language;
 
             if (!tray_manager_.ShowContextMenu(menu_context))
             {

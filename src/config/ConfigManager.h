@@ -14,6 +14,7 @@ public:
     static bool Load(AppConfig& config);
     static bool Save(const AppConfig& config);
     static bool SetTargetMonitorId(AppConfig& config, std::wstring_view target_monitor_id);
+    static bool SetTrayMenuLanguage(AppConfig& config, TrayMenuLanguage tray_menu_language);
     static bool SetLastSuccessfulMoveTime(AppConfig& config, std::optional<Timestamp> timestamp);
     static std::wstring GetConfigFilePath();
 

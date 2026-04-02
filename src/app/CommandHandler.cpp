@@ -54,11 +54,27 @@ const wchar_t* ToString(TrayCommandType command_type) noexcept
     case TrayCommandType::SelectTargetMonitor:
         return L"select_target_monitor";
 
+    case TrayCommandType::SetTrayMenuLanguage:
+        return L"set_tray_menu_language";
+
     case TrayCommandType::ExitApplication:
         return L"exit";
 
     default:
         return L"unknown";
+    }
+}
+
+const wchar_t* ToString(TrayMenuLanguage tray_menu_language) noexcept
+{
+    switch (tray_menu_language)
+    {
+    case TrayMenuLanguage::ChineseSimplified:
+        return L"zh-CN";
+
+    case TrayMenuLanguage::English:
+    default:
+        return L"en";
     }
 }
 }  // namespace
@@ -139,6 +155,13 @@ bool CommandHandler::HandleTrayCommand(
     {
         message += L" target_monitor_id=\"";
         message += command.target_monitor_id;
+        message += L"\"";
+    }
+
+    if (command.tray_menu_language.has_value())
+    {
+        message += L" tray_menu_language=\"";
+        message += ToString(*command.tray_menu_language);
         message += L"\"";
     }
     Logger::Info(log_phase, message);
@@ -222,6 +245,33 @@ bool CommandHandler::HandleTrayCommand(
                 ToString(state.target_monitor.resolution) + L"\"");
         result.should_execute_move = true;
         result.move_trigger = MoveTrigger::TargetMonitorChanged;
+        return true;
+    }
+
+    case TrayCommandType::SetTrayMenuLanguage:
+    {
+        result.should_execute_move = false;
+        result.should_exit = false;
+
+        if (!command.tray_menu_language.has_value())
+        {
+            Logger::Warning(log_phase, L"Ignoring the tray menu language command because the requested language is missing.");
+            return false;
+        }
+
+        if (!ConfigManager::SetTrayMenuLanguage(state.config, *command.tray_menu_language))
+        {
+            Logger::Warning(
+                log_phase,
+                L"Failed to persist the tray menu language selected from the tray menu. tray_menu_language=\"" +
+                    std::wstring(ToString(*command.tray_menu_language)) + L"\"");
+            return false;
+        }
+
+        Logger::Info(
+            log_phase,
+            L"Tray menu language selection persisted. tray_menu_language=\"" +
+                std::wstring(ToString(state.config.tray_menu_language)) + L"\"");
         return true;
     }
 

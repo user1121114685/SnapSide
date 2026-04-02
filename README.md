@@ -21,6 +21,12 @@ IconMover 是一个原生 C++/Win32 桌面托盘工具，用于在多显示器�
 
 建议在已加载 MSVC x64 环境的 Developer PowerShell 中执行，或复用仓库里的 `agent.py` 自动探测并加载可用环境。
 
+当前仓库在本机默认按下面的顺序构建：
+
+```powershell
+cmd /c "\"D:\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && cmake -S . -B build && cmake --build build --config Release"
+```
+
 当前仓库验证优先使用 NMake 生成器：
 
 ```powershell
@@ -34,6 +40,13 @@ cmake --build build --config Release
 cmake -S . -B build-vs -G "Visual Studio 17 2022" -A x64
 cmake --build build-vs --config Release
 ```
+
+## 构建注意事项
+
+- 编译前先加载 `D:\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat`，否则 `cl.exe`、`rc.exe`、`nmake` 和对应 SDK 环境可能不完整。
+- 不要在同一个 `build` 目录里来回切换 `NMake Makefiles` 和 `Visual Studio 17 2022` 生成器；需要切换时请改用新的构建目录，或先清理旧缓存。
+- 如果 `IconMover.exe` 正在运行，链接阶段可能报 `LNK1168`，因为输出文件被占用。重新编译前先退出正在运行的程序，或改用新的构建目录。
+- 仓库中的 `.cpp`、`.h`、`.rc` 和顶层 `CMakeLists.txt` 需保持为 UTF-8 with BOM，避免 MSVC 与资源编译器对中文和资源路径解析不一致。
 
 ## 运行
 

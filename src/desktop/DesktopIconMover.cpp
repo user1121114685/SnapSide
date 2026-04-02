@@ -1,8 +1,10 @@
 ﻿#include "desktop/DesktopIconMover.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <CommCtrl.h>
 
@@ -288,66 +290,145 @@ void LogTargetMonitorSelection(const MonitorInfo& monitor, const TargetMonitorSe
     Logger::Info(kDesktopMovePhase, message);
 }
 
-bool InspectCurrentIconPlacement(
-    const DesktopViewAccessor& desktop_view_accessor,
-    const RECT& target_work_area,
-    int icon_count,
-    int& icons_inside_target,
-    int& first_outside_icon_index,
-    POINT& first_outside_position)
+struct DesktopIconRecord final
 {
-    icons_inside_target = 0;
-    first_outside_icon_index = -1;
-    first_outside_position = {};
+    int icon_index = -1;
+    POINT current_position = {};
+    std::wstring item_type_text;
+    std::wstring display_name;
+};
+
+struct IconMoveAssignment final
+{
+    int icon_index = -1;
+    POINT position = {};
+};
+
+int CompareTextOrdinal(std::wstring_view left, std::wstring_view right) noexcept
+{
+    const int comparison = ::CompareStringOrdinal(
+        left.data(),
+        static_cast<int>(left.size()),
+        right.data(),
+        static_cast<int>(right.size()),
+        TRUE);
+
+    if (comparison == CSTR_LESS_THAN)
+    {
+        return -1;
+    }
+
+    if (comparison == CSTR_GREATER_THAN)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+bool DesktopIconRecordLess(const DesktopIconRecord& left, const DesktopIconRecord& right) noexcept
+{
+    const int item_type_order = CompareTextOrdinal(left.item_type_text, right.item_type_text);
+    if (item_type_order != 0)
+    {
+        return item_type_order < 0;
+    }
+
+    const int display_name_order = CompareTextOrdinal(left.display_name, right.display_name);
+    if (display_name_order != 0)
+    {
+        return display_name_order < 0;
+    }
+
+    return left.icon_index < right.icon_index;
+}
+
+bool CollectIconRecords(
+    DesktopViewAccessor& desktop_view_accessor,
+    int icon_count,
+    std::vector<DesktopIconRecord>& icons)
+{
+    icons.clear();
+    icons.reserve(static_cast<std::size_t>(icon_count));
 
     for (int icon_index = 0; icon_index < icon_count; ++icon_index)
     {
-        POINT current_position = {};
-        if (!desktop_view_accessor.GetIconPosition(icon_index, current_position))
+        DesktopIconRecord record = {};
+        record.icon_index = icon_index;
+
+        if (!desktop_view_accessor.GetIconPosition(icon_index, record.current_position))
         {
             return false;
         }
 
-        if (!PointInRect(target_work_area, current_position))
+        if (!desktop_view_accessor.GetItemTypeText(icon_index, record.item_type_text))
         {
-            first_outside_icon_index = icon_index;
-            first_outside_position = current_position;
-            return true;
+            const DWORD item_type_error = ResolveErrorCode();
+            Logger::Warning(
+                kDesktopMovePhase,
+                L"Failed to query a desktop icon item type; falling back to an empty type label for ordering. icon_index=" +
+                    std::to_wstring(icon_index) + L" " + DescribeWin32Error(item_type_error));
+            record.item_type_text.clear();
         }
 
-        ++icons_inside_target;
+        if (!desktop_view_accessor.GetItemDisplayName(icon_index, record.display_name))
+        {
+            const DWORD display_name_error = ResolveErrorCode();
+            Logger::Warning(
+                kDesktopMovePhase,
+                L"Failed to query a desktop icon display name; falling back to index ordering inside its item type. icon_index=" +
+                    std::to_wstring(icon_index) + L" " + DescribeWin32Error(display_name_error));
+            record.display_name.clear();
+        }
+
+        icons.push_back(std::move(record));
     }
 
     return true;
 }
 
-bool TryArrangeIconsByItemType(
-    DesktopViewAccessor& desktop_view_accessor,
-    const MonitorInfo& target_monitor,
+bool BuildFullSortedAssignments(
+    const RECT& target_work_area,
+    HWND desktop_list_view_window,
+    std::vector<DesktopIconRecord> icons,
+    std::vector<IconMoveAssignment>& assignments,
     MoveResult& result,
     int attempt_index)
 {
-    Logger::Info(
-        kDesktopMovePhase,
-        L"All desktop icons are already inside the target monitor work area; arranging by item type instead of moving every icon again. attempt=" +
-            BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + target_monitor.monitor_id + L"\"");
-
-    if (!desktop_view_accessor.SortIconsByItemType())
+    assignments.clear();
+    if (icons.empty())
     {
-        const DWORD arrange_error = ResolveErrorCode();
-        Logger::Warning(
+        return true;
+    }
+
+    std::stable_sort(icons.begin(), icons.end(), DesktopIconRecordLess);
+
+    IconLayoutResult layout;
+    if (!IconLayoutCalculator::Calculate(
+            target_work_area,
+            static_cast<int>(icons.size()),
+            layout,
+            desktop_list_view_window))
+    {
+        result.last_error = ResolveErrorCode();
+        Logger::Error(
             kDesktopMovePhase,
-            L"Arranging desktop icons by item type failed; falling back to the full move path. attempt=" +
-                BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + target_monitor.monitor_id + L"\" " +
-                DescribeWin32Error(arrange_error));
-        result.last_error = arrange_error;
+            L"Failed to calculate a fully sorted item-type layout for the desktop icons. attempt=" +
+                BuildAttemptLabel(attempt_index) + L" " + DescribeWin32Error(result.last_error));
         return false;
     }
 
-    result.outcome = MoveOutcome::Success;
-    result.skip_reason = MoveSkipReason::None;
-    result.executed_at = std::chrono::system_clock::now();
-    result.last_error = ERROR_SUCCESS;
+    assignments.reserve(icons.size());
+    for (std::size_t index = 0; index < icons.size(); ++index)
+    {
+        assignments.push_back(IconMoveAssignment{icons[index].icon_index, layout.positions[index]});
+    }
+
+    Logger::Info(
+        kDesktopMovePhase,
+        L"Built a full desktop icon layout ordered by item type from the target monitor top-left corner. attempt=" +
+            BuildAttemptLabel(attempt_index) + L" icon_count=" +
+            std::to_wstring(static_cast<unsigned long long>(icons.size())));
     return true;
 }
 
@@ -382,9 +463,13 @@ void LogFinalResult(const MoveResult& result, int attempt_count)
     }
 }
 
-bool ApplyLayout(HWND desktop_list_view_window, const IconLayoutResult& layout, MoveResult& result, int attempt_index)
+bool ApplyAssignments(
+    HWND desktop_list_view_window,
+    const std::vector<IconMoveAssignment>& assignments,
+    MoveResult& result,
+    int attempt_index)
 {
-    if (layout.positions.empty())
+    if (assignments.empty())
     {
         return true;
     }
@@ -399,11 +484,14 @@ bool ApplyLayout(HWND desktop_list_view_window, const IconLayoutResult& layout, 
         return false;
     }
 
-    for (int icon_index = 0; icon_index < result.icon_count; ++icon_index)
+    for (const IconMoveAssignment& assignment : assignments)
     {
-        const POINT& position = layout.positions[static_cast<std::size_t>(icon_index)];
         ::SetLastError(ERROR_SUCCESS);
-        const BOOL applied = ListView_SetItemPosition(desktop_list_view_window, icon_index, position.x, position.y);
+        const BOOL applied = ListView_SetItemPosition(
+            desktop_list_view_window,
+            assignment.icon_index,
+            assignment.position.x,
+            assignment.position.y);
         if (applied == FALSE)
         {
             result.last_error = ResolveErrorCode();
@@ -411,9 +499,9 @@ bool ApplyLayout(HWND desktop_list_view_window, const IconLayoutResult& layout, 
             std::wstring message = L"LVM_SETITEMPOSITION failed while moving a desktop icon. attempt=";
             message += BuildAttemptLabel(attempt_index);
             message += L" icon_index=";
-            message += std::to_wstring(icon_index);
+            message += std::to_wstring(assignment.icon_index);
             message += L" position=";
-            message += PointToString(position);
+            message += PointToString(assignment.position);
             message += L" ";
             message += DescribeWin32Error(result.last_error);
             Logger::Error(kDesktopMovePhase, message);
@@ -532,70 +620,29 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
         return false;
     }
 
-    int icons_inside_target = 0;
-    int first_outside_icon_index = -1;
-    POINT first_outside_position = {};
-    if (InspectCurrentIconPlacement(
-            desktop_view_accessor,
-            target_monitor->work_area_rect,
-            result.icon_count,
-            icons_inside_target,
-            first_outside_icon_index,
-            first_outside_position))
-    {
-        if (icons_inside_target == result.icon_count)
-        {
-            if (TryArrangeIconsByItemType(desktop_view_accessor, *target_monitor, result, attempt_index))
-            {
-                return true;
-            }
-        }
-        else
-        {
-            Logger::Info(
-                kDesktopMovePhase,
-                L"Desktop icons are not fully inside the target monitor work area yet; continuing with the full move path. attempt=" +
-                    BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + result.target_monitor_id + L"\" icons_inside_target=" +
-                    std::to_wstring(icons_inside_target) + L"/" + std::to_wstring(result.icon_count) +
-                    L" first_outside_icon_index=" + std::to_wstring(first_outside_icon_index) + L" first_outside_position=" +
-                    PointToString(first_outside_position));
-        }
-    }
-    else
-    {
-        const DWORD placement_inspection_error = ResolveErrorCode();
-        Logger::Warning(
-            kDesktopMovePhase,
-            L"Failed to inspect the current desktop icon positions; falling back to the full move path. attempt=" +
-                BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + result.target_monitor_id + L"\" " +
-                DescribeWin32Error(placement_inspection_error));
-    }
-
-    IconLayoutResult layout;
-    if (!IconLayoutCalculator::Calculate(
-            target_monitor->work_area_rect,
-            result.icon_count,
-            layout,
-            desktop_list_view_window))
+    std::vector<DesktopIconRecord> icons;
+    if (!CollectIconRecords(desktop_view_accessor, result.icon_count, icons))
     {
         result.outcome = MoveOutcome::Failed;
         result.last_error = ResolveErrorCode();
         Logger::Error(
             kDesktopMovePhase,
-            L"Failed to calculate the desktop icon layout for the target monitor. attempt=" + BuildAttemptLabel(attempt_index) +
-                L" target_monitor_id=\"" + result.target_monitor_id + L"\" " + DescribeWin32Error(result.last_error));
+            L"Failed to inspect the current desktop icon positions and metadata before moving icons. attempt=" +
+                BuildAttemptLabel(attempt_index) + L" target_monitor_id=\"" + result.target_monitor_id + L"\" " +
+                DescribeWin32Error(result.last_error));
         return false;
     }
 
-    if (layout.positions.size() != static_cast<std::size_t>(result.icon_count))
+    std::vector<IconMoveAssignment> assignments;
+    if (!BuildFullSortedAssignments(
+            target_monitor->work_area_rect,
+            desktop_list_view_window,
+            std::move(icons),
+            assignments,
+            result,
+            attempt_index))
     {
         result.outcome = MoveOutcome::Failed;
-        result.last_error = ERROR_INVALID_DATA;
-        Logger::Error(
-            kDesktopMovePhase,
-            L"Calculated icon positions do not match the desktop icon count. attempt=" + BuildAttemptLabel(attempt_index) +
-                L" icon_count=" + std::to_wstring(result.icon_count) + L" positions=" +
-                std::to_wstring(static_cast<unsigned long long>(layout.positions.size())));
         return false;
     }
 
@@ -603,9 +650,11 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
         kDesktopMovePhase,
         L"Applying desktop icon layout. attempt=" + BuildAttemptLabel(attempt_index) +
             L" target_monitor_id=\"" + result.target_monitor_id + L"\" icon_count=" +
-            std::to_wstring(result.icon_count) + L" desktop_list_view=" + HandleToString(desktop_list_view_window));
+            std::to_wstring(result.icon_count) + L" moved_icons=" +
+            std::to_wstring(static_cast<unsigned long long>(assignments.size())) + L" desktop_list_view=" +
+            HandleToString(desktop_list_view_window));
 
-    if (!ApplyLayout(desktop_list_view_window, layout, result, attempt_index))
+    if (!ApplyAssignments(desktop_list_view_window, assignments, result, attempt_index))
     {
         result.outcome = MoveOutcome::Failed;
         return false;

@@ -135,13 +135,19 @@ std::optional<TrayCommand> TrayManager::HandleCommand(WPARAM w_param) const
     switch (command_id)
     {
     case ID_TRAY_MOVE_ICONS_NOW:
-        return TrayCommand{TrayCommandType::MoveIconsNow, std::wstring()};
+        return TrayCommand{TrayCommandType::MoveIconsNow, std::wstring(), std::nullopt};
 
     case ID_TRAY_TOGGLE_AUTO_START:
-        return TrayCommand{TrayCommandType::ToggleAutoStart, std::wstring()};
+        return TrayCommand{TrayCommandType::ToggleAutoStart, std::wstring(), std::nullopt};
+
+    case ID_TRAY_SET_LANGUAGE_ENGLISH:
+        return TrayCommand{TrayCommandType::SetTrayMenuLanguage, std::wstring(), TrayMenuLanguage::English};
+
+    case ID_TRAY_SET_LANGUAGE_CHINESE_SIMPLIFIED:
+        return TrayCommand{TrayCommandType::SetTrayMenuLanguage, std::wstring(), TrayMenuLanguage::ChineseSimplified};
 
     case ID_TRAY_EXIT:
-        return TrayCommand{TrayCommandType::ExitApplication, std::wstring()};
+        return TrayCommand{TrayCommandType::ExitApplication, std::wstring(), std::nullopt};
 
     default:
         break;
@@ -151,7 +157,7 @@ std::optional<TrayCommand> TrayManager::HandleCommand(WPARAM w_param) const
     {
         if (monitor_command.command_id == command_id)
         {
-            return TrayCommand{TrayCommandType::SelectTargetMonitor, monitor_command.monitor_id};
+            return TrayCommand{TrayCommandType::SelectTargetMonitor, monitor_command.monitor_id, std::nullopt};
         }
     }
 

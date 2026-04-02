@@ -87,6 +87,33 @@ bool WindowClassEquals(HWND window, std::wstring_view expected_class) noexcept
                static_cast<int>(expected_class.size()),
                TRUE) == CSTR_EQUAL;
 }
+
+bool ResolveFolderViewItemPidl(IFolderView2* folder_view, int icon_index, PITEMID_CHILD& item_pidl)
+{
+    item_pidl = nullptr;
+
+    if (folder_view == nullptr)
+    {
+        ::SetLastError(ERROR_INVALID_WINDOW_HANDLE);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Desktop folder view is unavailable while resolving an item PIDL.");
+        return false;
+    }
+
+    const HRESULT result = folder_view->Item(icon_index, &item_pidl);
+    if (FAILED(result) || item_pidl == nullptr)
+    {
+        ::SetLastError(HResultToWin32Error(result, ERROR_NOT_FOUND));
+        Logger::Error(
+            kDesktopViewPhase,
+            L"IFolderView2::Item failed while resolving a desktop icon PIDL. icon_index=" + std::to_wstring(icon_index) +
+                L" hr=" + HResultToString(result));
+        ::CoTaskMemFree(item_pidl);
+        item_pidl = nullptr;
+        return false;
+    }
+
+    return true;
+}
 }  // namespace
 
 bool DesktopViewAccessor::IsTransientRefreshError(DWORD error_code) noexcept
@@ -396,19 +423,12 @@ bool DesktopViewAccessor::GetIconPosition(int icon_index, POINT& position) const
     }
 
     PITEMID_CHILD item_pidl = nullptr;
-    HRESULT result = folder_view_->Item(icon_index, &item_pidl);
-    if (FAILED(result) || item_pidl == nullptr)
+    if (!ResolveFolderViewItemPidl(folder_view_, icon_index, item_pidl))
     {
-        ::SetLastError(HResultToWin32Error(result, ERROR_NOT_FOUND));
-        Logger::Error(
-            kDesktopViewPhase,
-            L"IFolderView2::Item failed while resolving a desktop icon PIDL. icon_index=" + std::to_wstring(icon_index) +
-                L" hr=" + HResultToString(result));
-        ::CoTaskMemFree(item_pidl);
         return false;
     }
 
-    result = folder_view_->GetItemPosition(item_pidl, &position);
+    const HRESULT result = folder_view_->GetItemPosition(item_pidl, &position);
     ::CoTaskMemFree(item_pidl);
     if (FAILED(result))
     {
@@ -418,6 +438,127 @@ bool DesktopViewAccessor::GetIconPosition(int icon_index, POINT& position) const
             L"IFolderView2::GetItemPosition failed while reading a desktop icon position. icon_index=" +
                 std::to_wstring(icon_index) + L" hr=" + HResultToString(result));
         return false;
+    }
+
+    return true;
+}
+
+bool DesktopViewAccessor::GetItemTypeText(int icon_index, std::wstring& item_type_text) const
+{
+    item_type_text.clear();
+
+    if (!HasUsableContext())
+    {
+        ::SetLastError(ERROR_INVALID_WINDOW_HANDLE);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Cannot query a desktop item type because the desktop view accessor is not ready.");
+        return false;
+    }
+
+    if (icon_index < 0)
+    {
+        ::SetLastError(ERROR_INVALID_PARAMETER);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Desktop icon index cannot be negative when querying its item type.");
+        return false;
+    }
+
+    IShellFolder2* shell_folder2 = nullptr;
+    HRESULT result = desktop_folder_->QueryInterface(IID_PPV_ARGS(&shell_folder2));
+    if (FAILED(result) || shell_folder2 == nullptr)
+    {
+        ::SetLastError(HResultToWin32Error(result));
+        Logger::Error(
+            kDesktopViewPhase,
+            L"QueryInterface(IShellFolder2) failed while querying a desktop item type. hr=" + HResultToString(result));
+        SafeRelease(shell_folder2);
+        return false;
+    }
+
+    PITEMID_CHILD item_pidl = nullptr;
+    if (!ResolveFolderViewItemPidl(folder_view_, icon_index, item_pidl))
+    {
+        SafeRelease(shell_folder2);
+        return false;
+    }
+
+    VARIANT value = {};
+    ::VariantInit(&value);
+    result = shell_folder2->GetDetailsEx(item_pidl, &PKEY_ItemTypeText, &value);
+    SafeRelease(shell_folder2);
+    ::CoTaskMemFree(item_pidl);
+
+    if (FAILED(result))
+    {
+        ::SetLastError(HResultToWin32Error(result));
+        Logger::Error(
+            kDesktopViewPhase,
+            L"IShellFolder2::GetDetailsEx failed while querying a desktop item type. icon_index=" +
+                std::to_wstring(icon_index) + L" hr=" + HResultToString(result));
+        return false;
+    }
+
+    VARIANT string_value = {};
+    ::VariantInit(&string_value);
+    if (SUCCEEDED(::VariantChangeType(&string_value, &value, 0, VT_BSTR)) && string_value.bstrVal != nullptr)
+    {
+        item_type_text.assign(string_value.bstrVal, SysStringLen(string_value.bstrVal));
+    }
+
+    ::VariantClear(&string_value);
+    ::VariantClear(&value);
+    return true;
+}
+
+bool DesktopViewAccessor::GetItemDisplayName(int icon_index, std::wstring& display_name) const
+{
+    display_name.clear();
+
+    if (!HasUsableContext())
+    {
+        ::SetLastError(ERROR_INVALID_WINDOW_HANDLE);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Cannot query a desktop item name because the desktop view accessor is not ready.");
+        return false;
+    }
+
+    if (icon_index < 0)
+    {
+        ::SetLastError(ERROR_INVALID_PARAMETER);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Desktop icon index cannot be negative when querying its display name.");
+        return false;
+    }
+
+    PITEMID_CHILD item_pidl = nullptr;
+    if (!ResolveFolderViewItemPidl(folder_view_, icon_index, item_pidl))
+    {
+        return false;
+    }
+
+    PIDLIST_ABSOLUTE absolute_pidl = ::ILCombine(desktop_folder_pidl_, item_pidl);
+    ::CoTaskMemFree(item_pidl);
+    if (absolute_pidl == nullptr)
+    {
+        ::SetLastError(ERROR_OUTOFMEMORY);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"ILCombine failed while building an absolute desktop item PIDL.");
+        return false;
+    }
+
+    PWSTR name = nullptr;
+    const HRESULT result = ::SHGetNameFromIDList(absolute_pidl, SIGDN_NORMALDISPLAY, &name);
+    ::CoTaskMemFree(absolute_pidl);
+    if (FAILED(result))
+    {
+        ::SetLastError(HResultToWin32Error(result));
+        Logger::Error(
+            kDesktopViewPhase,
+            L"SHGetNameFromIDList failed while querying a desktop item display name. icon_index=" +
+                std::to_wstring(icon_index) + L" hr=" + HResultToString(result));
+        ::CoTaskMemFree(name);
+        return false;
+    }
+
+    if (name != nullptr)
+    {
+        display_name.assign(name);
+        ::CoTaskMemFree(name);
     }
 
     return true;
@@ -446,30 +587,6 @@ bool DesktopViewAccessor::ForEachIconIndex(const IconIndexVisitor& visitor) cons
         }
     }
 
-    return true;
-}
-
-bool DesktopViewAccessor::SortIconsByItemType()
-{
-    if (!HasUsableContext())
-    {
-        ::SetLastError(ERROR_INVALID_WINDOW_HANDLE);
-        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Cannot sort desktop icons by item type because the desktop view accessor is not ready.");
-        return false;
-    }
-
-    const SORTCOLUMN sort_column = {PKEY_ItemTypeText, SORT_ASCENDING};
-    const HRESULT result = folder_view_->SetSortColumns(&sort_column, 1);
-    if (FAILED(result))
-    {
-        ::SetLastError(HResultToWin32Error(result));
-        Logger::Error(
-            kDesktopViewPhase,
-            L"IFolderView2::SetSortColumns failed while arranging desktop icons by item type. hr=" + HResultToString(result));
-        return false;
-    }
-
-    Logger::Info(kDesktopViewPhase, L"Requested the desktop shell view to arrange icons by item type.");
     return true;
 }
 
