@@ -1,31 +1,50 @@
 ﻿#pragma once
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include <windows.h>
 
+#include "app/MessageWindow.h"
 #include "core/AppState.h"
 
 namespace icon_mover
 {
-class App final
+struct LaunchOptions final
+{
+    bool log_test_error = false;
+    std::optional<std::wstring> set_target_monitor_id;
+};
+
+class App final : private MessageWindowHost
 {
 public:
-    App(HINSTANCE instance, bool log_test_error) noexcept;
+    App(HINSTANCE instance, LaunchOptions options) noexcept;
 
     int Run();
 
 private:
     bool Initialize();
-    bool RegisterWindowClass();
-    bool CreateMainWindow();
-    int MessageLoop() const;
+    bool LoadConfiguration();
+    bool ApplyStartupConfigOverrides();
+    bool CreateMessageWindow();
+    int MessageLoop();
+    bool ArmTimer(TimerId timer_id, UINT interval_ms);
+    void DisarmTimer(TimerId timer_id) noexcept;
+    void DisarmAllTimers() noexcept;
+    void HandleTimer(UINT_PTR timer_id);
+    void HandleDisplayChange(UINT bits_per_pixel, int width, int height);
+    void BeginShutdown(int exit_code, std::wstring_view reason);
 
-    static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w_param, LPARAM l_param);
-    LRESULT HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param);
+    std::optional<LRESULT> OnMessageWindowMessage(HWND window, UINT message, WPARAM w_param, LPARAM l_param) override;
 
     HINSTANCE instance_;
-    HWND window_;
-    ATOM window_class_;
-    bool log_test_error_;
+    LaunchOptions launch_options_;
     AppState state_;
+    MessageWindow message_window_;
+    int exit_code_;
+    bool shutdown_requested_;
 };
 }  // namespace icon_mover
+
