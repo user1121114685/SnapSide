@@ -30,16 +30,24 @@ void SafeRelease(InterfaceT*& pointer) noexcept
     }
 }
 
-std::wstring HandleToString(HWND window)
-{
-    return std::to_wstring(reinterpret_cast<UINT_PTR>(window));
-}
-
 std::wstring HResultToString(HRESULT result)
 {
     std::wstringstream stream;
     stream << L"0x" << std::uppercase << std::hex << static_cast<unsigned long>(result);
     return stream.str();
+}
+
+bool ReportExplorerRefreshRetryable(DWORD error_code, std::wstring_view detail)
+{
+    ::SetLastError(error_code);
+
+    std::wstring message = L"Explorer desktop shell view is not stable yet; refresh will be retried later. detail=\"";
+    message.append(detail.data(), detail.size());
+    message += L"\"";
+    message += L" last_error=";
+    message += std::to_wstring(error_code);
+    Logger::Warning(kDesktopViewPhase, message);
+    return false;
 }
 
 bool WindowClassEquals(HWND window, std::wstring_view expected_class) noexcept
@@ -64,6 +72,20 @@ bool WindowClassEquals(HWND window, std::wstring_view expected_class) noexcept
                TRUE) == CSTR_EQUAL;
 }
 }  // namespace
+
+bool DesktopViewAccessor::IsTransientRefreshError(DWORD error_code) noexcept
+{
+    switch (error_code)
+    {
+    case ERROR_INVALID_WINDOW_HANDLE:
+    case ERROR_NOT_READY:
+    case ERROR_BUSY:
+        return true;
+
+    default:
+        return false;
+    }
+}
 
 DesktopViewAccessor::~DesktopViewAccessor()
 {
@@ -121,13 +143,21 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
         &desktop_dispatch);
     SafeRelease(shell_windows);
 
-    if (FAILED(result) || desktop_dispatch == nullptr)
+    if (FAILED(result))
     {
         Logger::Error(
             kDesktopViewPhase,
             L"IShellWindows::FindWindowSW failed to resolve the desktop window. hr=" + HResultToString(result));
         SafeRelease(desktop_dispatch);
         return false;
+    }
+
+    if (desktop_dispatch == nullptr)
+    {
+        SafeRelease(desktop_dispatch);
+        return ReportExplorerRefreshRetryable(
+            ERROR_NOT_READY,
+            L"IShellWindows::FindWindowSW did not return the desktop dispatch yet.");
     }
 
     IServiceProvider* service_provider = nullptr;
@@ -157,13 +187,21 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
     IShellView* shell_view = nullptr;
     result = shell_browser->QueryActiveShellView(&shell_view);
     SafeRelease(shell_browser);
-    if (FAILED(result) || shell_view == nullptr)
+    if (FAILED(result))
     {
         Logger::Error(
             kDesktopViewPhase,
             L"IShellBrowser::QueryActiveShellView failed for the desktop. hr=" + HResultToString(result));
         SafeRelease(shell_view);
         return false;
+    }
+
+    if (shell_view == nullptr)
+    {
+        SafeRelease(shell_view);
+        return ReportExplorerRefreshRetryable(
+            ERROR_NOT_READY,
+            L"IShellBrowser::QueryActiveShellView did not return the active desktop shell view yet.");
     }
 
     IFolderView2* folder_view = nullptr;
@@ -194,7 +232,7 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
     PIDLIST_ABSOLUTE current_folder_pidl = nullptr;
     result = persist_folder->GetCurFolder(&current_folder_pidl);
     SafeRelease(persist_folder);
-    if (FAILED(result) || current_folder_pidl == nullptr)
+    if (FAILED(result))
     {
         Logger::Error(
             kDesktopViewPhase,
@@ -205,19 +243,28 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
         return false;
     }
 
+    if (current_folder_pidl == nullptr)
+    {
+        SafeRelease(folder_view);
+        SafeRelease(shell_view);
+        ::CoTaskMemFree(current_folder_pidl);
+        return ReportExplorerRefreshRetryable(
+            ERROR_BUSY,
+            L"IPersistFolder2::GetCurFolder returned no desktop folder PIDL yet.");
+    }
+
     const bool is_desktop_folder = ::ILIsEqual(current_folder_pidl, desktop_folder_pidl_) != FALSE;
     ::CoTaskMemFree(current_folder_pidl);
     if (!is_desktop_folder)
     {
-        Logger::Error(kDesktopViewPhase, L"The active shell view does not resolve to the desktop folder.");
         SafeRelease(folder_view);
         SafeRelease(shell_view);
-        return false;
+        return ReportExplorerRefreshRetryable(ERROR_BUSY, L"The active shell view is not bound to the desktop folder yet.");
     }
 
     HWND shell_view_window = nullptr;
     result = shell_view->GetWindow(&shell_view_window);
-    if (FAILED(result) || shell_view_window == nullptr)
+    if (FAILED(result))
     {
         Logger::Error(
             kDesktopViewPhase,
@@ -225,6 +272,15 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
         SafeRelease(folder_view);
         SafeRelease(shell_view);
         return false;
+    }
+
+    if (shell_view_window == nullptr)
+    {
+        SafeRelease(folder_view);
+        SafeRelease(shell_view);
+        return ReportExplorerRefreshRetryable(
+            ERROR_INVALID_WINDOW_HANDLE,
+            L"IShellView::GetWindow returned no desktop shell view window yet.");
     }
 
     HWND resolved_list_view_window = nullptr;
@@ -239,13 +295,11 @@ bool DesktopViewAccessor::Refresh(HWND desktop_list_view_window)
 
     if (resolved_list_view_window != desktop_list_view_window)
     {
-        Logger::Error(
-            kDesktopViewPhase,
-            L"The shell desktop view does not match the discovered SysListView32 handle. shell_list_view=" +
-                HandleToString(resolved_list_view_window) + L" discovered_list_view=" + HandleToString(desktop_list_view_window));
         SafeRelease(folder_view);
         SafeRelease(shell_view);
-        return false;
+        return ReportExplorerRefreshRetryable(
+            ERROR_BUSY,
+            L"The shell desktop view does not match the discovered SysListView32 handle and Explorer is still rebuilding.");
     }
 
     const LRESULT list_view_icon_count = ::SendMessageW(desktop_list_view_window, LVM_GETITEMCOUNT, 0, 0);

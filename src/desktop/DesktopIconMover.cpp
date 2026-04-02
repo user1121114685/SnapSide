@@ -418,11 +418,26 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
     {
         result.outcome = MoveOutcome::Failed;
         result.last_error = ResolveErrorCode();
-        Logger::Error(
-            kDesktopMovePhase,
-            L"Failed to bind DesktopViewAccessor to the confirmed desktop ListView. attempt=" +
-                BuildAttemptLabel(attempt_index) + L" desktop_list_view=" + HandleToString(desktop_list_view_window) +
-                L" " + DescribeWin32Error(result.last_error));
+
+        const bool transient_refresh_failure = DesktopViewAccessor::IsTransientRefreshError(result.last_error);
+        if (transient_refresh_failure)
+        {
+            result.skip_reason = MoveSkipReason::ExplorerNotReady;
+            Logger::Warning(
+                kDesktopMovePhase,
+                L"DesktopViewAccessor could not bind to the current desktop ListView because Explorer is still rebuilding. attempt=" +
+                    BuildAttemptLabel(attempt_index) + L" desktop_list_view=" + HandleToString(desktop_list_view_window) +
+                    L" " + DescribeWin32Error(result.last_error));
+        }
+        else
+        {
+            Logger::Error(
+                kDesktopMovePhase,
+                L"Failed to bind DesktopViewAccessor to the confirmed desktop ListView. attempt=" +
+                    BuildAttemptLabel(attempt_index) + L" desktop_list_view=" + HandleToString(desktop_list_view_window) +
+                    L" " + DescribeWin32Error(result.last_error));
+        }
+
         return false;
     }
 

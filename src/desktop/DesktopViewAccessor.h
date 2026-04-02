@@ -18,6 +18,8 @@ public:
     DesktopViewAccessor(const DesktopViewAccessor&) = delete;
     DesktopViewAccessor& operator=(const DesktopViewAccessor&) = delete;
 
+    static bool IsTransientRefreshError(DWORD error_code) noexcept;
+
     bool Refresh(HWND desktop_list_view_window);
     void Reset() noexcept;
 

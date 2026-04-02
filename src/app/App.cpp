@@ -12,6 +12,7 @@
 #include "common/Logger.h"
 #include "config/ConfigManager.h"
 #include "desktop/DesktopIconMover.h"
+#include "monitor/MonitorManager.h"
 
 namespace icon_mover
 {
@@ -20,6 +21,8 @@ namespace
 constexpr wchar_t kBootstrapPhase[] = L"bootstrap";
 constexpr wchar_t kRuntimePhase[] = L"runtime";
 constexpr wchar_t kShutdownPhase[] = L"shutdown";
+constexpr UINT kMaxDisplayChangeMoveAttempts = 4;
+constexpr ULONGLONG kDisplayChangeMoveTimeoutMs = 15000;
 
 const wchar_t* TimerName(TimerId timer_id)
 {
@@ -105,6 +108,61 @@ const wchar_t* MoveOutcomeName(MoveOutcome outcome) noexcept
     }
 }
 
+const wchar_t* MoveSkipReasonName(MoveSkipReason reason) noexcept
+{
+    switch (reason)
+    {
+    case MoveSkipReason::None:
+        return L"none";
+
+    case MoveSkipReason::ExplorerNotReady:
+        return L"explorer_not_ready";
+
+    case MoveSkipReason::NoAvailableMonitor:
+        return L"no_available_monitor";
+
+    case MoveSkipReason::TargetMonitorUnavailable:
+        return L"target_monitor_unavailable";
+
+    case MoveSkipReason::NoDesktopIcons:
+        return L"no_desktop_icons";
+
+    default:
+        return L"unknown";
+    }
+}
+
+const wchar_t* TargetMonitorResolutionName(TargetMonitorResolution resolution) noexcept
+{
+    switch (resolution)
+    {
+    case TargetMonitorResolution::Unresolved:
+        return L"unresolved";
+
+    case TargetMonitorResolution::ConfiguredMonitor:
+        return L"configured_monitor";
+
+    case TargetMonitorResolution::FirstSecondaryMonitor:
+        return L"first_secondary_monitor";
+
+    case TargetMonitorResolution::PrimaryMonitorFallback:
+        return L"primary_monitor_fallback";
+
+    case TargetMonitorResolution::Unavailable:
+        return L"unavailable";
+
+    default:
+        return L"unknown";
+    }
+}
+
+bool ShouldRetryDisplayChangeMove(const MoveResult& move_result) noexcept
+{
+    return move_result.outcome == MoveOutcome::Failed &&
+           (move_result.skip_reason == MoveSkipReason::ExplorerNotReady ||
+            DesktopViewAccessor::IsTransientRefreshError(move_result.last_error));
+}
+
 bool IsExplorerReady(const AppState& state) noexcept
 {
     return state.explorer.availability == ExplorerAvailability::Ready &&
@@ -122,7 +180,13 @@ App::App(HINSTANCE instance, LaunchOptions options) noexcept
     : instance_(instance),
       launch_options_(std::move(options)),
       exit_code_(EXIT_SUCCESS),
-      shutdown_requested_(false)
+      shutdown_requested_(false),
+      pending_display_change_move_(false),
+      suppress_immediate_display_change_move_(false),
+      display_change_move_session_active_(false),
+      display_change_generation_(0),
+      display_change_started_tick_(0),
+      display_change_move_attempt_count_(0)
 {
 }
 
@@ -381,6 +445,145 @@ bool App::ExecuteDesktopIconMove(MoveTrigger trigger)
     return succeeded;
 }
 
+bool App::RefreshMonitorStateForDisplayChange()
+{
+    MonitorTopology topology;
+    if (!MonitorManager::RefreshTopology(topology))
+    {
+        state_.monitor_topology = {};
+        state_.target_monitor = {};
+        state_.target_monitor.requested_monitor_id = state_.config.target_monitor_id;
+        Logger::Warning(
+            kRuntimePhase,
+            L"Display change processing could not refresh the monitor topology; skipping the pending automatic rearrange.");
+        return false;
+    }
+
+    const std::wstring previous_resolved_monitor_id = state_.target_monitor.resolved_monitor_id;
+    const TargetMonitorResolution previous_resolution = state_.target_monitor.resolution;
+
+    state_.monitor_topology = std::move(topology);
+    state_.target_monitor = MonitorManager::ResolveTargetMonitor(state_.monitor_topology, state_.config.target_monitor_id);
+
+    std::wstring message = L"Display change monitor state refreshed. requested_monitor_id=\"";
+    message += state_.target_monitor.requested_monitor_id;
+    message += L"\" resolved_monitor_id=\"";
+    message += state_.target_monitor.resolved_monitor_id;
+    message += L"\" resolution=\"";
+    message += TargetMonitorResolutionName(state_.target_monitor.resolution);
+    message += L"\" previous_resolved_monitor_id=\"";
+    message += previous_resolved_monitor_id;
+    message += L"\" previous_resolution=\"";
+    message += TargetMonitorResolutionName(previous_resolution);
+    message += L"\" monitor_count=";
+    message += std::to_wstring(static_cast<unsigned long long>(state_.monitor_topology.monitors.size()));
+    Logger::Info(kRuntimePhase, message);
+    return true;
+}
+
+bool App::RefreshExplorerState(std::wstring_view reason, bool allow_immediate_display_change_move)
+{
+    const bool previous_suppression_state = suppress_immediate_display_change_move_;
+    if (!allow_immediate_display_change_move)
+    {
+        suppress_immediate_display_change_move_ = true;
+    }
+
+    const ExplorerAvailability previous_availability = state_.explorer.availability;
+    const HWND previous_list_view_window = state_.explorer.desktop_list_view_window;
+    if (!explorer_watcher_.Start(message_window_.Handle(), state_.explorer, state_.timers))
+    {
+        std::wstring message = L"Failed to refresh Explorer readiness while processing reason=\"";
+        message.append(reason.data(), reason.size());
+        message += L"\"";
+        Logger::Warning(kRuntimePhase, message);
+        suppress_immediate_display_change_move_ = previous_suppression_state;
+        return false;
+    }
+
+    HandleExplorerStateUpdate(previous_availability, previous_list_view_window);
+    suppress_immediate_display_change_move_ = previous_suppression_state;
+    return true;
+}
+
+void App::StartDisplayChangeMoveSession()
+{
+    ++display_change_generation_;
+    display_change_move_session_active_ = true;
+    pending_display_change_move_ = true;
+    display_change_started_tick_ = ::GetTickCount64();
+    display_change_move_attempt_count_ = 0;
+}
+
+void App::ClearDisplayChangeMoveSession(std::wstring_view reason, bool warning)
+{
+    if (!display_change_move_session_active_ && !pending_display_change_move_)
+    {
+        return;
+    }
+
+    const ULONGLONG elapsed_ms =
+        display_change_started_tick_ == 0 ? 0 : (::GetTickCount64() - display_change_started_tick_);
+
+    std::wstring message = L"Display change rearrange session closed. generation=";
+    message += std::to_wstring(display_change_generation_);
+    message += L" attempts=";
+    message += std::to_wstring(display_change_move_attempt_count_);
+    message += L" elapsed_ms=";
+    message += std::to_wstring(elapsed_ms);
+    message += L" reason=\"";
+    message.append(reason.data(), reason.size());
+    message += L"\"";
+
+    if (warning)
+    {
+        Logger::Warning(kRuntimePhase, message);
+    }
+    else
+    {
+        Logger::Info(kRuntimePhase, message);
+    }
+
+    display_change_move_session_active_ = false;
+    pending_display_change_move_ = false;
+    display_change_started_tick_ = 0;
+    display_change_move_attempt_count_ = 0;
+}
+
+bool App::EnsureDisplayChangeMoveSessionAlive(std::wstring_view reason)
+{
+    if (!display_change_move_session_active_)
+    {
+        return false;
+    }
+
+    const ULONGLONG elapsed_ms =
+        display_change_started_tick_ == 0 ? 0 : (::GetTickCount64() - display_change_started_tick_);
+    if (elapsed_ms < kDisplayChangeMoveTimeoutMs)
+    {
+        return true;
+    }
+
+    std::wstring message = L"Stopping automatic desktop icon rearrange after the display change because the session timed out. generation=";
+    message += std::to_wstring(display_change_generation_);
+    message += L" attempts=";
+    message += std::to_wstring(display_change_move_attempt_count_);
+    message += L" elapsed_ms=";
+    message += std::to_wstring(elapsed_ms);
+    message += L" timeout_ms=";
+    message += std::to_wstring(kDisplayChangeMoveTimeoutMs);
+    message += L" reason=\"";
+    message.append(reason.data(), reason.size());
+    message += L"\"";
+    Logger::Warning(kRuntimePhase, message);
+
+    display_change_move_session_active_ = false;
+    pending_display_change_move_ = false;
+    display_change_started_tick_ = 0;
+    display_change_move_attempt_count_ = 0;
+    return false;
+}
+
 bool App::ScheduleFirstAutoMove(UINT interval_ms, std::wstring_view reason)
 {
     if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
@@ -453,7 +656,7 @@ void App::HandleTimer(UINT_PTR timer_id)
         message += TimerName(managed_timer_id);
         message += L"\"";
         Logger::Info(kRuntimePhase, message);
-        static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::DisplayChange));
+        HandleDisplayChangeDebounceTimer();
         return;
     }
 
@@ -541,37 +744,93 @@ void App::HandleFirstAutoMoveTimer()
     }
 
     state_.first_auto_move_state = FirstAutoMoveState::Completed;
+
+    if (display_change_move_session_active_)
+    {
+        ClearDisplayChangeMoveSession(L"startup automatic move already executed against the current topology", false);
+    }
+
     Logger::Info(CurrentPhase(state_), result_message);
 }
 
 void App::HandleDisplayChange(UINT bits_per_pixel, int width, int height)
 {
-    std::wstring message = L"WM_DISPLAYCHANGE received. bits_per_pixel=";
+    const bool replacing_session = display_change_move_session_active_;
+    const ULONGLONG previous_generation = display_change_generation_;
+
+    StartDisplayChangeMoveSession();
+
+    std::wstring message = L"WM_DISPLAYCHANGE received. generation=";
+    message += std::to_wstring(display_change_generation_);
+    message += L" bits_per_pixel=";
     message += std::to_wstring(bits_per_pixel);
     message += L" width=";
     message += std::to_wstring(width);
     message += L" height=";
     message += std::to_wstring(height);
+    if (replacing_session)
+    {
+        message += L" superseded_generation=";
+        message += std::to_wstring(previous_generation);
+    }
     Logger::Info(kRuntimePhase, message);
 
     if (!ArmTimer(TimerId::DisplayChangeDebounce, kDisplayChangeDebounceMs))
     {
-        Logger::Warning(kRuntimePhase, L"Display change debounce timer was not armed.");
+        ClearDisplayChangeMoveSession(L"display change debounce timer could not be armed", true);
     }
+}
+
+void App::HandleDisplayChangeDebounceTimer()
+{
+    if (!EnsureDisplayChangeMoveSessionAlive(L"display_change_debounce_elapsed"))
+    {
+        return;
+    }
+
+    if (!RefreshMonitorStateForDisplayChange())
+    {
+        ClearDisplayChangeMoveSession(L"monitor topology refresh failed after WM_DISPLAYCHANGE", true);
+        return;
+    }
+
+    if (state_.target_monitor.resolution == TargetMonitorResolution::Unavailable)
+    {
+        ClearDisplayChangeMoveSession(L"no eligible secondary monitor is available after WM_DISPLAYCHANGE", true);
+        return;
+    }
+
+    pending_display_change_move_ = true;
+
+    if (!RefreshExplorerState(L"display_change_debounce", false))
+    {
+        ClearDisplayChangeMoveSession(L"Explorer readiness refresh failed after WM_DISPLAYCHANGE", true);
+        return;
+    }
+
+    if (!IsExplorerReady(state_))
+    {
+        std::wstring message = L"Explorer desktop is not stable after the display change; deferring automatic rearrange until SysListView32 is ready. generation=";
+        message += std::to_wstring(display_change_generation_);
+        Logger::Info(kRuntimePhase, message);
+        return;
+    }
+
+    TryExecutePendingDisplayChangeMove(L"display_change_debounce_elapsed");
 }
 
 void App::HandleExplorerStateUpdate(ExplorerAvailability previous_availability, HWND previous_list_view_window)
 {
     SyncDesktopViewAccessor(previous_availability, previous_list_view_window);
 
-    if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
+    if (display_change_move_session_active_)
     {
-        return;
+        static_cast<void>(EnsureDisplayChangeMoveSessionAlive(L"explorer_state_update"));
     }
 
     if (!IsExplorerReady(state_))
     {
-        if (state_.timers.first_auto_move_armed)
+        if (state_.first_auto_move_state != FirstAutoMoveState::Completed && state_.timers.first_auto_move_armed)
         {
             DisarmTimer(TimerId::FirstAutoMove);
             Logger::Warning(
@@ -579,10 +838,23 @@ void App::HandleExplorerStateUpdate(ExplorerAvailability previous_availability, 
                 L"Explorer became unavailable before the startup automatic move executed; cancelled the pending automatic move.");
         }
 
-        if (state_.first_auto_move_state != FirstAutoMoveState::WaitingForExplorer &&
+        if (state_.first_auto_move_state != FirstAutoMoveState::Completed &&
+            state_.first_auto_move_state != FirstAutoMoveState::WaitingForExplorer &&
             state_.first_auto_move_state != FirstAutoMoveState::Running)
         {
             state_.first_auto_move_state = FirstAutoMoveState::WaitingForExplorer;
+        }
+
+        return;
+    }
+
+    if (state_.first_auto_move_state == FirstAutoMoveState::Completed)
+    {
+        if (pending_display_change_move_ &&
+            !state_.timers.display_change_debounce_armed &&
+            !suppress_immediate_display_change_move_)
+        {
+            TryExecutePendingDisplayChangeMove(L"explorer_ready_after_display_change");
         }
 
         return;
@@ -614,6 +886,141 @@ void App::HandleExplorerStateUpdate(ExplorerAvailability previous_availability, 
     }
 
     static_cast<void>(ScheduleFirstAutoMove(interval_ms, reason));
+}
+
+void App::TryExecutePendingDisplayChangeMove(std::wstring_view reason)
+{
+    if (!display_change_move_session_active_ || !pending_display_change_move_ || state_.timers.display_change_debounce_armed)
+    {
+        return;
+    }
+
+    if (state_.first_auto_move_state != FirstAutoMoveState::Completed)
+    {
+        return;
+    }
+
+    if (!IsExplorerReady(state_))
+    {
+        return;
+    }
+
+    if (!EnsureDisplayChangeMoveSessionAlive(reason))
+    {
+        return;
+    }
+
+    if (display_change_move_attempt_count_ >= kMaxDisplayChangeMoveAttempts)
+    {
+        ClearDisplayChangeMoveSession(L"display change retry budget was exhausted before another move attempt", true);
+        return;
+    }
+
+    if (!RefreshMonitorStateForDisplayChange())
+    {
+        ClearDisplayChangeMoveSession(L"monitor topology refresh failed before the pending display change move", true);
+        return;
+    }
+
+    if (state_.target_monitor.resolution == TargetMonitorResolution::Unavailable)
+    {
+        ClearDisplayChangeMoveSession(L"target monitor is unavailable before the pending display change move", true);
+        return;
+    }
+
+    ++display_change_move_attempt_count_;
+
+    std::wstring message = L"Executing the pending automatic desktop icon rearrange after a display change. generation=";
+    message += std::to_wstring(display_change_generation_);
+    message += L" attempt=";
+    message += std::to_wstring(display_change_move_attempt_count_);
+    message += L"/";
+    message += std::to_wstring(kMaxDisplayChangeMoveAttempts);
+    message += L" reason=\"";
+    message.append(reason.data(), reason.size());
+    message += L"\"";
+    Logger::Info(kRuntimePhase, message);
+
+    pending_display_change_move_ = false;
+    static_cast<void>(ExecuteDesktopIconMove(MoveTrigger::DisplayChange));
+
+    if (!state_.last_move_result.has_value())
+    {
+        ClearDisplayChangeMoveSession(L"display change rearrange finished without a move result", true);
+        return;
+    }
+
+    const MoveResult& move_result = *state_.last_move_result;
+    if (ShouldRetryDisplayChangeMove(move_result))
+    {
+        if (!EnsureDisplayChangeMoveSessionAlive(L"display_change_retry"))
+        {
+            return;
+        }
+
+        if (display_change_move_attempt_count_ >= kMaxDisplayChangeMoveAttempts)
+        {
+            std::wstring retry_limit_message =
+                L"Stopping automatic desktop icon rearrange after the display change because the retry budget was exhausted. generation=";
+            retry_limit_message += std::to_wstring(display_change_generation_);
+            retry_limit_message += L" attempts=";
+            retry_limit_message += std::to_wstring(display_change_move_attempt_count_);
+            retry_limit_message += L" last_error=";
+            retry_limit_message += std::to_wstring(move_result.last_error);
+            Logger::Warning(kRuntimePhase, retry_limit_message);
+            ClearDisplayChangeMoveSession(L"display change retry budget exhausted after transient failure", true);
+            return;
+        }
+
+        pending_display_change_move_ = true;
+
+        std::wstring retry_message = L"Display change rearrange hit Explorer instability; waiting before retry. generation=";
+        retry_message += std::to_wstring(display_change_generation_);
+        retry_message += L" attempts=";
+        retry_message += std::to_wstring(display_change_move_attempt_count_);
+        retry_message += L" skip_reason=\"";
+        retry_message += MoveSkipReasonName(move_result.skip_reason);
+        retry_message += L"\" last_error=";
+        retry_message += std::to_wstring(move_result.last_error);
+        Logger::Warning(kRuntimePhase, retry_message);
+
+        if (!RefreshExplorerState(L"display_change_retry", false))
+        {
+            ClearDisplayChangeMoveSession(L"Explorer readiness refresh failed while scheduling a display change retry", true);
+            return;
+        }
+
+        if (IsExplorerReady(state_))
+        {
+            if (!ArmTimer(TimerId::DisplayChangeDebounce, kExplorerRetryIntervalMs))
+            {
+                ClearDisplayChangeMoveSession(L"delayed display change retry timer could not be armed", true);
+                return;
+            }
+
+            std::wstring delayed_retry_message =
+                L"Scheduled a delayed display change retry because Explorer was still rebuilding the desktop view. generation=";
+            delayed_retry_message += std::to_wstring(display_change_generation_);
+            delayed_retry_message += L" next_attempt=";
+            delayed_retry_message += std::to_wstring(display_change_move_attempt_count_ + 1);
+            Logger::Info(kRuntimePhase, delayed_retry_message);
+        }
+
+        return;
+    }
+
+    if (move_result.outcome == MoveOutcome::Failed)
+    {
+        std::wstring failure_message = L"Display change rearrange failed and will not be retried. skip_reason=\"";
+        failure_message += MoveSkipReasonName(move_result.skip_reason);
+        failure_message += L"\" last_error=";
+        failure_message += std::to_wstring(move_result.last_error);
+        Logger::Warning(kRuntimePhase, failure_message);
+        ClearDisplayChangeMoveSession(L"display change rearrange failed without a retryable Explorer state", true);
+        return;
+    }
+
+    ClearDisplayChangeMoveSession(L"display change rearrange completed", false);
 }
 
 bool App::RefreshDesktopViewContext()
