@@ -1,0 +1,440 @@
+[
+  {
+    "id": "task_001",
+    "phase": "bootstrap",
+    "desc": "初始化 C++/Win32 原生工程骨架：创建 CMakeLists.txt、src/include 目录、WinMain 入口、x64/Windows 10/MSVC 编译选项，链接 Shell32/User32/Gdi32/Comctl32，并确保工程可在 Visual Studio 2019/2022 下通过 CMake 构建。",
+    "depends_on": [],
+    "files_hint": [
+      "CMakeLists.txt",
+      "src/main.cpp",
+      "src/app/App.cpp",
+      "src/app/App.h",
+      "include/"
+    ],
+    "test_hint": "在 Windows 10/11 + MSVC 环境执行 Release 构建，确认生成 x64 可执行文件且进程启动后不立即崩溃。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "done",
+    "retries": 1,
+    "replans": 0,
+    "review_result": "PASS",
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_002",
+    "phase": "bootstrap",
+    "desc": "实现日志基础设施：初始化 %APPDATA%\\IconMover 目录与 icon_mover.log 文件，封装时间戳、级别、阶段字段输出，并提供基于 GetLastError() + FormatMessage 的错误格式化工具；日志写入失败时不得导致进程退出。",
+    "depends_on": [
+      "task_001"
+    ],
+    "files_hint": [
+      "src/common/Logger.cpp",
+      "src/common/Logger.h",
+      "src/common/Win32Error.cpp",
+      "src/common/Win32Error.h"
+    ],
+    "test_hint": "启动程序后检查 %APPDATA%\\IconMover\\icon_mover.log 已创建，手工触发一次受控错误路径时日志中包含错误码和可读错误描述。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_003",
+    "phase": "foundation",
+    "desc": "定义核心数据结构与运行时状态：显示器信息、虚拟屏幕信息、应用配置、移动结果、定时器/状态机枚举等，为后续 MonitorManager、ExplorerWatcher、DesktopIconMover 提供统一模型。",
+    "depends_on": [
+      "task_001",
+      "task_002"
+    ],
+    "files_hint": [
+      "src/core/Models.h",
+      "src/core/Constants.h",
+      "src/core/AppState.h"
+    ],
+    "test_hint": "代码可成功编译；人工检查结构体字段已覆盖设备名、主副屏标记、显示器矩形、工作区矩形、目标显示器标识、最近执行时间、首次自动执行状态等核心信息。",
+    "test_commands": [],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_004",
+    "phase": "foundation",
+    "desc": "实现配置管理：读写 %APPDATA%\\IconMover\\config.ini，至少支持目标显示器标识、最近一次成功执行时间、预留日志级别字段；启动时加载，修改目标显示器后立即持久化。",
+    "depends_on": [
+      "task_002",
+      "task_003"
+    ],
+    "files_hint": [
+      "src/config/ConfigManager.cpp",
+      "src/config/ConfigManager.h"
+    ],
+    "test_hint": "首次启动可自动创建 config.ini；修改目标显示器配置后重启程序仍能读回；配置文件缺失或损坏时程序记录日志并回退默认值。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_005",
+    "phase": "foundation",
+    "desc": "实现隐藏消息窗口与基础消息循环：通过 RegisterClassEx/CreateWindowEx 创建无界面消息窗口，接入自定义消息、WM_TIMER、WM_DISPLAYCHANGE、退出流程，为托盘和后台任务提供统一宿主。",
+    "depends_on": [
+      "task_001",
+      "task_002",
+      "task_003"
+    ],
+    "files_hint": [
+      "src/app/MessageWindow.cpp",
+      "src/app/MessageWindow.h",
+      "src/app/App.cpp"
+    ],
+    "test_hint": "程序启动后保持常驻且无主窗口显示；退出消息能够结束消息循环并写入退出日志。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_006",
+    "phase": "foundation",
+    "desc": "实现 AutoStartManager：使用 RegOpenKeyEx、RegQueryValueEx、RegSetValueEx、RegDeleteValue 读写 HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run，封装真实状态查询、启用、禁用及失败回滚日志。",
+    "depends_on": [
+      "task_002",
+      "task_003",
+      "task_005"
+    ],
+    "files_hint": [
+      "src/autostart/AutoStartManager.cpp",
+      "src/autostart/AutoStartManager.h"
+    ],
+    "test_hint": "人工切换启用/禁用后，注册表 Run 项存在性与程序内状态一致；失败场景下日志记录具体错误码与描述。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_007",
+    "phase": "foundation",
+    "desc": "实现 MonitorManager 的显示器枚举能力：基于 EnumDisplayMonitors、GetMonitorInfo、GetSystemMetrics(SM_CMONITORS/SM_XVIRTUALSCREEN/SM_YVIRTUALSCREEN/SM_CXVIRTUALSCREEN/SM_CYVIRTUALSCREEN) 构建显示器列表，识别主屏、记录工作区和虚拟屏坐标，并实现默认目标显示器与降级选择规则。",
+    "depends_on": [
+      "task_002",
+      "task_003",
+      "task_004"
+    ],
+    "files_hint": [
+      "src/monitor/MonitorManager.cpp",
+      "src/monitor/MonitorManager.h"
+    ],
+    "test_hint": "双屏环境下能识别主屏与首个非主屏；副屏位于左侧或上侧时坐标允许为负值；单屏环境下返回“无可用目标屏”并写日志。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_008",
+    "phase": "foundation",
+    "desc": "实现目标显示器工作区计算：结合 GetMonitorInfo 提供的 rcWork/rcMonitor 与 SystemParametersInfo(SPI_GETWORKAREA) 做兼容校验，统一输出可用于桌面图标排列的虚拟屏幕绝对工作区矩形。",
+    "depends_on": [
+      "task_007"
+    ],
+    "files_hint": [
+      "src/monitor/MonitorWorkArea.cpp",
+      "src/monitor/MonitorManager.cpp"
+    ],
+    "test_hint": "在主屏、左侧副屏、右侧副屏场景下，返回的工作区左上角与宽高均落在虚拟屏幕坐标系中；任务栏位于不同边时图标起点不压住任务栏。",
+    "test_commands": [],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_009",
+    "phase": "foundation",
+    "desc": "实现 ExplorerWatcher：通过 FindWindow(\"Progman\")、FindWindowEx 轮询查找桌面宿主与 SysListView32，使用 SetTimer 实现持续重试与超时后继续后台等待，并记录 Explorer 未就绪、句柄找到、句柄失效等日志。",
+    "depends_on": [
+      "task_002",
+      "task_003",
+      "task_005"
+    ],
+    "files_hint": [
+      "src/explorer/ExplorerWatcher.cpp",
+      "src/explorer/ExplorerWatcher.h"
+    ],
+    "test_hint": "Explorer 尚未完全就绪时程序不崩溃且持续写等待日志；找到 SysListView32 后可停止等待定时器并返回句柄；Explorer 重建后允许重新获取句柄。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_010",
+    "phase": "foundation",
+    "desc": "实现桌面视图访问封装：使用 SHGetDesktopFolder 建立桌面 Shell 上下文，并封装 IShellView、IFolderView2 获取流程；同时结合 SysListView32 句柄提供图标总数读取、索引遍历和桌面上下文校验。",
+    "depends_on": [
+      "task_009"
+    ],
+    "files_hint": [
+      "src/desktop/DesktopViewAccessor.cpp",
+      "src/desktop/DesktopViewAccessor.h"
+    ],
+    "test_hint": "程序能够获取桌面图标数量且不访问桌面文件系统；Shell 接口获取失败时记录日志并安全返回失败。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_011",
+    "phase": "tray",
+    "desc": "实现 TrayManager 基础能力：使用 Shell_NotifyIcon 注册托盘图标与提示文本，定义 WM_TRAYICON 自定义消息，支持右键弹出菜单、退出时删除托盘图标，并处理 Explorer 重启后的任务栏重建消息以重新注册托盘。",
+    "depends_on": [
+      "task_005",
+      "task_002"
+    ],
+    "files_hint": [
+      "src/tray/TrayManager.cpp",
+      "src/tray/TrayManager.h",
+      "src/resource/resource.h",
+      "resources/app.ico"
+    ],
+    "test_hint": "启动后可见托盘图标；右键事件能进入菜单处理；退出时托盘图标消失；重启 Explorer 后托盘图标能恢复。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_012",
+    "phase": "feature",
+    "desc": "实现图标排列算法：基于目标工作区、图标总数和保守默认网格间距计算列优先坐标，必要时兼容读取 ListView 布局参数；确保所有坐标使用虚拟屏幕绝对坐标并始终落在目标工作区内。",
+    "depends_on": [
+      "task_008",
+      "task_010"
+    ],
+    "files_hint": [
+      "src/desktop/IconLayoutCalculator.cpp",
+      "src/desktop/IconLayoutCalculator.h"
+    ],
+    "test_hint": "给定不同工作区尺寸和图标数量时，计算结果从左上角开始、Y 轴优先递增、越界后换列；人工检查末尾图标不会超出工作区。",
+    "test_commands": [],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_013",
+    "phase": "feature",
+    "desc": "实现 DesktopIconMover：统一封装完整移动执行器，先重新确认目标显示器与桌面句柄，再读取图标数量，使用 LVM_SETITEMPOSITION 逐项设置坐标；失败时重新获取 SysListView32 后重试一次，并记录开始、目标屏、图标数、成功/失败结果。",
+    "depends_on": [
+      "task_007",
+      "task_008",
+      "task_010",
+      "task_012"
+    ],
+    "files_hint": [
+      "src/desktop/DesktopIconMover.cpp",
+      "src/desktop/DesktopIconMover.h"
+    ],
+    "test_hint": "双屏环境下手工触发后，桌面图标整体移动到目标副屏工作区并按列排列；单屏环境下不执行移动且日志明确说明原因；整个过程不操作桌面文件。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_014",
+    "phase": "feature",
+    "desc": "打通启动闭环：应用启动时按“日志初始化 → 配置加载 → 消息窗口 → 托盘 → 自启状态读取 → Explorer 就绪等待”顺序初始化；首次检测到 SysListView32 后仅自动执行一次图标移动，失败时允许后续重试定时器再次触发。",
+    "depends_on": [
+      "task_004",
+      "task_006",
+      "task_009",
+      "task_011",
+      "task_013"
+    ],
+    "files_hint": [
+      "src/app/App.cpp",
+      "src/app/App.h"
+    ],
+    "test_hint": "系统登录后启动程序，无主窗口弹出；Explorer 就绪后自动执行一次移动；日志可看到启动、等待、就绪、自动执行结果的完整链路。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_015",
+    "phase": "feature",
+    "desc": "实现托盘完整菜单与命令分发：包含“立即移动图标”“设置目标显示器”动态子菜单、“开机自启”勾选项和“退出”；目标显示器菜单基于当前枚举结果生成，选择后写入配置并立即触发一次移动。",
+    "depends_on": [
+      "task_006",
+      "task_007",
+      "task_011",
+      "task_013",
+      "task_014"
+    ],
+    "files_hint": [
+      "src/tray/TrayMenuBuilder.cpp",
+      "src/tray/TrayManager.cpp",
+      "src/app/CommandHandler.cpp",
+      "src/app/CommandHandler.h"
+    ],
+    "test_hint": "右键托盘可见全部菜单项；点击“立即移动图标”会执行完整移动；切换目标显示器后配置持久化并即时生效；开机自启勾选状态与注册表真实状态一致。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_016",
+    "phase": "quality",
+    "desc": "实现 WM_DISPLAYCHANGE 自动重排与防抖：消息窗口接收显示器变化后启动短延迟定时器，重新枚举显示器、校验目标显示器是否仍存在、等待 Explorer 稳定后复用统一移动执行器；目标屏失效时按降级规则处理并写日志。",
+    "depends_on": [
+      "task_007",
+      "task_009",
+      "task_013",
+      "task_014",
+      "task_015"
+    ],
+    "files_hint": [
+      "src/app/App.cpp",
+      "src/explorer/ExplorerWatcher.cpp",
+      "src/monitor/MonitorManager.cpp"
+    ],
+    "test_hint": "插拔副屏、切换扩展模式、调整分辨率后，程序不会连续无限重排；目标显示器消失时能自动降级或停止执行并记录原因；Explorer 尚未稳定时可延迟后再重试。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  },
+  {
+    "id": "task_017",
+    "phase": "quality",
+    "desc": "补齐收尾与发布前验收：统一关键日志埋点、清理退出路径、检查 UTF-8 with BOM 编码、完善资源与版本信息，补充 README 中的构建/人工验收步骤，并完成一轮按 PRD 场景覆盖的手工回归。",
+    "depends_on": [
+      "task_016"
+    ],
+    "files_hint": [
+      "README.md",
+      "src/",
+      "resources/",
+      "CMakeLists.txt"
+    ],
+    "test_hint": "按 PRD 人工验收重点逐项验证：双屏启动自动移动、手动立即移动、切换目标显示器、自启开关、断开副屏降级、重连副屏自动重排、日志完整记录关键操作；同时确认所有源码文件为 UTF-8 with BOM。",
+    "test_commands": [
+      "cmake -S . -B build",
+      "cmake --build build --config Release"
+    ],
+    "status": "todo",
+    "retries": 0,
+    "replans": 0,
+    "review_result": null,
+    "blocked_by": [],
+    "last_error": "",
+    "diagnosis": ""
+  }
+]
