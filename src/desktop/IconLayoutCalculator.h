@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <span>
 #include <vector>
 
 #include <windows.h>
@@ -10,6 +11,11 @@ struct IconLayoutMetrics final
 {
     SIZE grid_spacing = {};
     bool used_list_view_spacing = false;
+    bool used_observed_spacing = false;
+    POINT grid_phase = {};
+    POINT start_position = {};
+    int available_rows = 0;
+    int available_columns = 0;
     int icons_per_column = 0;
     int column_count = 0;
     bool coordinates_clamped = false;
@@ -28,7 +34,8 @@ public:
         const RECT& target_work_area,
         int icon_count,
         IconLayoutResult& result,
-        HWND desktop_list_view_window = nullptr);
+        HWND desktop_list_view_window = nullptr,
+        std::span<const POINT> sample_positions = {});
 
 private:
     IconLayoutCalculator() = delete;

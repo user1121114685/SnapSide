@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cwctype>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -177,6 +178,13 @@ bool PointInRect(const RECT& rect, const POINT& point) noexcept
     return ::PtInRect(&rect, point) != FALSE;
 }
 
+RECT TranslateScreenRectToViewCoordinates(const RECT& screen_rect, const RECT& virtual_bounds) noexcept
+{
+    RECT translated_rect = screen_rect;
+    ::OffsetRect(&translated_rect, -virtual_bounds.left, -virtual_bounds.top);
+    return translated_rect;
+}
+
 HWND FindDesktopHostWindow(HWND progman_window) noexcept
 {
     if (progman_window != nullptr)
@@ -296,6 +304,8 @@ struct DesktopIconRecord final
     POINT current_position = {};
     std::wstring item_type_text;
     std::wstring display_name;
+    std::wstring parsing_name;
+    int sort_priority = 100;
 };
 
 struct IconMoveAssignment final
@@ -326,8 +336,47 @@ int CompareTextOrdinal(std::wstring_view left, std::wstring_view right) noexcept
     return 0;
 }
 
+bool ContainsCaseInsensitive(std::wstring_view text, std::wstring_view pattern) noexcept
+{
+    if (pattern.empty() || text.size() < pattern.size())
+    {
+        return false;
+    }
+
+    const auto equals_ignore_case = [](wchar_t left, wchar_t right) noexcept
+    {
+        return std::towlower(left) == std::towlower(right);
+    };
+
+    const auto it = std::search(text.begin(), text.end(), pattern.begin(), pattern.end(), equals_ignore_case);
+    return it != text.end();
+}
+
+int ResolveDesktopSortPriority(std::wstring_view parsing_name) noexcept
+{
+    constexpr wchar_t kThisPcClsid[] = L"{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+    constexpr wchar_t kRecycleBinClsid[] = L"{645FF040-5081-101B-9F08-00AA002F954E}";
+
+    if (ContainsCaseInsensitive(parsing_name, kThisPcClsid))
+    {
+        return 0;
+    }
+
+    if (ContainsCaseInsensitive(parsing_name, kRecycleBinClsid))
+    {
+        return 1;
+    }
+
+    return 100;
+}
+
 bool DesktopIconRecordLess(const DesktopIconRecord& left, const DesktopIconRecord& right) noexcept
 {
+    if (left.sort_priority != right.sort_priority)
+    {
+        return left.sort_priority < right.sort_priority;
+    }
+
     const int item_type_order = CompareTextOrdinal(left.item_type_text, right.item_type_text);
     if (item_type_order != 0)
     {
@@ -381,6 +430,18 @@ bool CollectIconRecords(
             record.display_name.clear();
         }
 
+        if (!desktop_view_accessor.GetItemParsingName(icon_index, record.parsing_name))
+        {
+            const DWORD parsing_name_error = ResolveErrorCode();
+            Logger::Warning(
+                kDesktopMovePhase,
+                L"Failed to query a desktop icon parsing name; falling back to normal item-type ordering. icon_index=" +
+                    std::to_wstring(icon_index) + L" " + DescribeWin32Error(parsing_name_error));
+            record.parsing_name.clear();
+        }
+
+        record.sort_priority = ResolveDesktopSortPriority(record.parsing_name);
+
         icons.push_back(std::move(record));
     }
 
@@ -401,6 +462,13 @@ bool BuildFullSortedAssignments(
         return true;
     }
 
+    std::vector<POINT> sample_positions;
+    sample_positions.reserve(icons.size());
+    for (const DesktopIconRecord& icon : icons)
+    {
+        sample_positions.push_back(icon.current_position);
+    }
+
     std::stable_sort(icons.begin(), icons.end(), DesktopIconRecordLess);
 
     IconLayoutResult layout;
@@ -408,7 +476,8 @@ bool BuildFullSortedAssignments(
             target_work_area,
             static_cast<int>(icons.size()),
             layout,
-            desktop_list_view_window))
+            desktop_list_view_window,
+            sample_positions))
     {
         result.last_error = ResolveErrorCode();
         Logger::Error(
@@ -512,6 +581,58 @@ bool ApplyAssignments(
     return true;
 }
 
+void LogPostApplyDiagnostics(
+    DesktopViewAccessor& desktop_view_accessor,
+    const std::vector<IconMoveAssignment>& assignments,
+    const RECT& layout_work_area,
+    int icon_count,
+    int attempt_index)
+{
+    if (assignments.empty() || icon_count <= 0)
+    {
+        return;
+    }
+
+    POINT requested_min = assignments.front().position;
+    for (const IconMoveAssignment& assignment : assignments)
+    {
+        requested_min.x = std::min(requested_min.x, assignment.position.x);
+        requested_min.y = std::min(requested_min.y, assignment.position.y);
+    }
+
+    POINT actual_min = {};
+    bool initialized = false;
+    for (int icon_index = 0; icon_index < icon_count; ++icon_index)
+    {
+        POINT actual_position = {};
+        if (!desktop_view_accessor.GetIconPosition(icon_index, actual_position))
+        {
+            Logger::Warning(
+                kDesktopMovePhase,
+                L"Post-apply desktop icon verification could not read an icon position. attempt=" +
+                    BuildAttemptLabel(attempt_index) + L" icon_index=" + std::to_wstring(icon_index));
+            return;
+        }
+
+        if (!initialized)
+        {
+            actual_min = actual_position;
+            initialized = true;
+            continue;
+        }
+
+        actual_min.x = std::min(actual_min.x, actual_position.x);
+        actual_min.y = std::min(actual_min.y, actual_position.y);
+    }
+
+    Logger::Info(
+        kDesktopMovePhase,
+        L"Post-apply desktop icon verification completed. attempt=" + BuildAttemptLabel(attempt_index) +
+            L" layout_work_area=" + RectToString(layout_work_area) +
+            L" requested_min=" + PointToString(requested_min) +
+            L" actual_min=" + PointToString(actual_min));
+}
+
 bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id, int attempt_index, MoveResult& result)
 {
     result = {};
@@ -559,6 +680,16 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
 
     result.target_monitor_id = target_monitor->monitor_id;
     LogTargetMonitorSelection(*target_monitor, selection, attempt_index);
+
+    const RECT layout_work_area = TranslateScreenRectToViewCoordinates(
+        target_monitor->work_area_rect,
+        topology.virtual_screen.bounds);
+    Logger::Info(
+        kDesktopMovePhase,
+        L"Translated target monitor work area into desktop view coordinates. attempt=" + BuildAttemptLabel(attempt_index) +
+            L" screen_work_area=" + RectToString(target_monitor->work_area_rect) +
+            L" virtual_bounds=" + RectToString(topology.virtual_screen.bounds) +
+            L" layout_work_area=" + RectToString(layout_work_area));
 
     const HWND desktop_list_view_window = DiscoverDesktopListViewWindow();
     if (desktop_list_view_window == nullptr)
@@ -635,7 +766,7 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
 
     std::vector<IconMoveAssignment> assignments;
     if (!BuildFullSortedAssignments(
-            target_monitor->work_area_rect,
+            layout_work_area,
             desktop_list_view_window,
             std::move(icons),
             assignments,
@@ -659,6 +790,13 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
         result.outcome = MoveOutcome::Failed;
         return false;
     }
+
+    LogPostApplyDiagnostics(
+        desktop_view_accessor,
+        assignments,
+        layout_work_area,
+        result.icon_count,
+        attempt_index);
 
     result.outcome = MoveOutcome::Success;
     result.skip_reason = MoveSkipReason::None;

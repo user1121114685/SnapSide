@@ -29,6 +29,7 @@ public:
     bool GetIconPosition(int icon_index, POINT& position) const;
     bool GetItemTypeText(int icon_index, std::wstring& item_type_text) const;
     bool GetItemDisplayName(int icon_index, std::wstring& display_name) const;
+    bool GetItemParsingName(int icon_index, std::wstring& parsing_name) const;
     bool ForEachIconIndex(const IconIndexVisitor& visitor) const;
 
 private:

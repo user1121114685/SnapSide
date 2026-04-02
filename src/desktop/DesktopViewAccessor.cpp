@@ -564,6 +564,62 @@ bool DesktopViewAccessor::GetItemDisplayName(int icon_index, std::wstring& displ
     return true;
 }
 
+bool DesktopViewAccessor::GetItemParsingName(int icon_index, std::wstring& parsing_name) const
+{
+    parsing_name.clear();
+
+    if (!HasUsableContext())
+    {
+        ::SetLastError(ERROR_INVALID_WINDOW_HANDLE);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Cannot query a desktop item parsing name because the desktop view accessor is not ready.");
+        return false;
+    }
+
+    if (icon_index < 0)
+    {
+        ::SetLastError(ERROR_INVALID_PARAMETER);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"Desktop icon index cannot be negative when querying its parsing name.");
+        return false;
+    }
+
+    PITEMID_CHILD item_pidl = nullptr;
+    if (!ResolveFolderViewItemPidl(folder_view_, icon_index, item_pidl))
+    {
+        return false;
+    }
+
+    PIDLIST_ABSOLUTE absolute_pidl = ::ILCombine(desktop_folder_pidl_, item_pidl);
+    ::CoTaskMemFree(item_pidl);
+    if (absolute_pidl == nullptr)
+    {
+        ::SetLastError(ERROR_OUTOFMEMORY);
+        Logger::LogLastError(LogLevel::Error, kDesktopViewPhase, L"ILCombine failed while building an absolute desktop item PIDL for the parsing name.");
+        return false;
+    }
+
+    PWSTR name = nullptr;
+    const HRESULT result = ::SHGetNameFromIDList(absolute_pidl, SIGDN_DESKTOPABSOLUTEPARSING, &name);
+    ::CoTaskMemFree(absolute_pidl);
+    if (FAILED(result))
+    {
+        ::SetLastError(HResultToWin32Error(result));
+        Logger::Error(
+            kDesktopViewPhase,
+            L"SHGetNameFromIDList failed while querying a desktop item parsing name. icon_index=" +
+                std::to_wstring(icon_index) + L" hr=" + HResultToString(result));
+        ::CoTaskMemFree(name);
+        return false;
+    }
+
+    if (name != nullptr)
+    {
+        parsing_name.assign(name);
+        ::CoTaskMemFree(name);
+    }
+
+    return true;
+}
+
 bool DesktopViewAccessor::ForEachIconIndex(const IconIndexVisitor& visitor) const
 {
     if (!visitor)
