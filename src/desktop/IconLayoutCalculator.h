@@ -9,9 +9,12 @@ namespace icon_mover
 {
 struct IconLayoutMetrics final
 {
+    SIZE raw_grid_spacing = {};
     SIZE grid_spacing = {};
     bool used_list_view_spacing = false;
-    bool used_observed_spacing = false;
+    bool normalized_for_target_dpi = false;
+    UINT source_dpi = USER_DEFAULT_SCREEN_DPI;
+    UINT target_dpi = USER_DEFAULT_SCREEN_DPI;
     POINT grid_phase = {};
     POINT start_position = {};
     int available_rows = 0;
@@ -35,6 +38,7 @@ public:
         int icon_count,
         IconLayoutResult& result,
         HWND desktop_list_view_window = nullptr,
+        UINT target_monitor_dpi = USER_DEFAULT_SCREEN_DPI,
         std::span<const POINT> sample_positions = {});
 
 private:

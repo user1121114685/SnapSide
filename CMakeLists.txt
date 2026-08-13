@@ -92,6 +92,7 @@ target_compile_options(IconMover
 target_link_libraries(IconMover
     PRIVATE
         shell32
+        shcore
         user32
         gdi32
         comctl32

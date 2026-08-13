@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <CommCtrl.h>
+#include <ShellScalingApi.h>
 
 #include "common/Logger.h"
 #include "common/Win32Error.h"
@@ -25,6 +26,8 @@ constexpr wchar_t kWorkerWindowClassName[] = L"WorkerW";
 constexpr wchar_t kDesktopHostClassName[] = L"SHELLDLL_DefView";
 constexpr wchar_t kDesktopListViewClassName[] = L"SysListView32";
 constexpr wchar_t kDesktopListViewWindowName[] = L"FolderView";
+constexpr int kPositionVerificationTolerance = 2;
+constexpr int kMaximumLoggedPositionMismatches = 5;
 
 const wchar_t* ToString(MoveTrigger trigger) noexcept
 {
@@ -171,6 +174,23 @@ bool WindowClassEquals(HWND window, std::wstring_view expected_class) noexcept
                expected_class.data(),
                static_cast<int>(expected_class.size()),
                TRUE) == CSTR_EQUAL;
+}
+
+UINT ResolveMonitorDpi(HMONITOR monitor_handle) noexcept
+{
+    UINT dpi_x = USER_DEFAULT_SCREEN_DPI;
+    UINT dpi_y = USER_DEFAULT_SCREEN_DPI;
+    if (monitor_handle == nullptr ||
+        FAILED(::GetDpiForMonitor(monitor_handle, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)) ||
+        dpi_x == 0)
+    {
+        Logger::Warning(
+            kDesktopMovePhase,
+            L"Could not resolve the target monitor effective DPI; using 96 DPI for layout normalization.");
+        return USER_DEFAULT_SCREEN_DPI;
+    }
+
+    return dpi_x;
 }
 
 bool PointInRect(const RECT& rect, const POINT& point) noexcept
@@ -450,6 +470,7 @@ bool CollectIconRecords(
 
 bool BuildFullSortedAssignments(
     const RECT& target_work_area,
+    UINT target_monitor_dpi,
     HWND desktop_list_view_window,
     std::vector<DesktopIconRecord> icons,
     std::vector<IconMoveAssignment>& assignments,
@@ -477,12 +498,23 @@ bool BuildFullSortedAssignments(
             static_cast<int>(icons.size()),
             layout,
             desktop_list_view_window,
+            target_monitor_dpi,
             sample_positions))
     {
         result.last_error = ResolveErrorCode();
         Logger::Error(
             kDesktopMovePhase,
             L"Failed to calculate a fully sorted item-type layout for the desktop icons. attempt=" +
+                BuildAttemptLabel(attempt_index) + L" " + DescribeWin32Error(result.last_error));
+        return false;
+    }
+
+    if (layout.metrics.coordinates_clamped)
+    {
+        result.last_error = ERROR_INSUFFICIENT_BUFFER;
+        Logger::Error(
+            kDesktopMovePhase,
+            L"The target monitor cannot hold a unique position for every desktop icon with the resolved grid spacing; refusing to apply overlapping coordinates. attempt=" +
                 BuildAttemptLabel(attempt_index) + L" " + DescribeWin32Error(result.last_error));
         return false;
     }
@@ -581,7 +613,7 @@ bool ApplyAssignments(
     return true;
 }
 
-void LogPostApplyDiagnostics(
+bool VerifyAssignments(
     DesktopViewAccessor& desktop_view_accessor,
     const std::vector<IconMoveAssignment>& assignments,
     const RECT& layout_work_area,
@@ -590,47 +622,87 @@ void LogPostApplyDiagnostics(
 {
     if (assignments.empty() || icon_count <= 0)
     {
-        return;
+        return true;
     }
 
     POINT requested_min = assignments.front().position;
+    POINT requested_max = assignments.front().position;
     for (const IconMoveAssignment& assignment : assignments)
     {
         requested_min.x = std::min(requested_min.x, assignment.position.x);
         requested_min.y = std::min(requested_min.y, assignment.position.y);
+        requested_max.x = std::max(requested_max.x, assignment.position.x);
+        requested_max.y = std::max(requested_max.y, assignment.position.y);
     }
 
     POINT actual_min = {};
+    POINT actual_max = {};
     bool initialized = false;
-    for (int icon_index = 0; icon_index < icon_count; ++icon_index)
+    int mismatch_count = 0;
+    for (const IconMoveAssignment& assignment : assignments)
     {
         POINT actual_position = {};
-        if (!desktop_view_accessor.GetIconPosition(icon_index, actual_position))
+        if (!desktop_view_accessor.GetIconPosition(assignment.icon_index, actual_position))
         {
             Logger::Warning(
                 kDesktopMovePhase,
                 L"Post-apply desktop icon verification could not read an icon position. attempt=" +
-                    BuildAttemptLabel(attempt_index) + L" icon_index=" + std::to_wstring(icon_index));
-            return;
+                    BuildAttemptLabel(attempt_index) + L" icon_index=" + std::to_wstring(assignment.icon_index));
+            return false;
         }
 
         if (!initialized)
         {
             actual_min = actual_position;
+            actual_max = actual_position;
             initialized = true;
-            continue;
+        }
+        else
+        {
+            actual_min.x = std::min(actual_min.x, actual_position.x);
+            actual_min.y = std::min(actual_min.y, actual_position.y);
+            actual_max.x = std::max(actual_max.x, actual_position.x);
+            actual_max.y = std::max(actual_max.y, actual_position.y);
         }
 
-        actual_min.x = std::min(actual_min.x, actual_position.x);
-        actual_min.y = std::min(actual_min.y, actual_position.y);
+        const bool position_matches =
+            std::abs(actual_position.x - assignment.position.x) <= kPositionVerificationTolerance &&
+            std::abs(actual_position.y - assignment.position.y) <= kPositionVerificationTolerance;
+        const bool position_is_in_target = PointInRect(layout_work_area, actual_position);
+        if (!position_matches || !position_is_in_target)
+        {
+            ++mismatch_count;
+            if (mismatch_count <= kMaximumLoggedPositionMismatches)
+            {
+                Logger::Warning(
+                    kDesktopMovePhase,
+                    L"Post-apply desktop icon position did not match the requested target. attempt=" +
+                        BuildAttemptLabel(attempt_index) + L" icon_index=" + std::to_wstring(assignment.icon_index) +
+                        L" requested=" + PointToString(assignment.position) +
+                        L" actual=" + PointToString(actual_position) +
+                        L" in_target=" + (position_is_in_target ? std::wstring(L"true") : std::wstring(L"false")));
+            }
+        }
     }
 
-    Logger::Info(
-        kDesktopMovePhase,
+    std::wstring message =
         L"Post-apply desktop icon verification completed. attempt=" + BuildAttemptLabel(attempt_index) +
-            L" layout_work_area=" + RectToString(layout_work_area) +
-            L" requested_min=" + PointToString(requested_min) +
-            L" actual_min=" + PointToString(actual_min));
+        L" layout_work_area=" + RectToString(layout_work_area) +
+        L" requested_min=" + PointToString(requested_min) +
+        L" requested_max=" + PointToString(requested_max) +
+        L" actual_min=" + PointToString(actual_min) +
+        L" actual_max=" + PointToString(actual_max) +
+        L" verified_icons=" + std::to_wstring(icon_count) +
+        L" mismatches=" + std::to_wstring(mismatch_count);
+
+    if (mismatch_count != 0)
+    {
+        Logger::Warning(kDesktopMovePhase, message);
+        return false;
+    }
+
+    Logger::Info(kDesktopMovePhase, message);
+    return true;
 }
 
 bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id, int attempt_index, MoveResult& result)
@@ -684,12 +756,14 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
     const RECT layout_work_area = TranslateScreenRectToViewCoordinates(
         target_monitor->work_area_rect,
         topology.virtual_screen.bounds);
+    const UINT target_monitor_dpi = ResolveMonitorDpi(target_monitor->handle);
     Logger::Info(
         kDesktopMovePhase,
         L"Translated target monitor work area into desktop view coordinates. attempt=" + BuildAttemptLabel(attempt_index) +
             L" screen_work_area=" + RectToString(target_monitor->work_area_rect) +
             L" virtual_bounds=" + RectToString(topology.virtual_screen.bounds) +
-            L" layout_work_area=" + RectToString(layout_work_area));
+            L" layout_work_area=" + RectToString(layout_work_area) +
+            L" target_monitor_dpi=" + std::to_wstring(target_monitor_dpi));
 
     const HWND desktop_list_view_window = DiscoverDesktopListViewWindow();
     if (desktop_list_view_window == nullptr)
@@ -767,6 +841,7 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
     std::vector<IconMoveAssignment> assignments;
     if (!BuildFullSortedAssignments(
             layout_work_area,
+            target_monitor_dpi,
             desktop_list_view_window,
             std::move(icons),
             assignments,
@@ -791,12 +866,22 @@ bool ExecuteAttempt(MoveTrigger trigger, std::wstring_view requested_monitor_id,
         return false;
     }
 
-    LogPostApplyDiagnostics(
-        desktop_view_accessor,
-        assignments,
-        layout_work_area,
-        result.icon_count,
-        attempt_index);
+    if (!VerifyAssignments(
+            desktop_view_accessor,
+            assignments,
+            layout_work_area,
+            result.icon_count,
+            attempt_index))
+    {
+        result.outcome = MoveOutcome::Failed;
+        result.skip_reason = MoveSkipReason::ExplorerNotReady;
+        result.last_error = ERROR_BUSY;
+        Logger::Warning(
+            kDesktopMovePhase,
+            L"Explorer did not retain the complete requested desktop layout; treating the desktop view as unstable so the move can be retried. attempt=" +
+                BuildAttemptLabel(attempt_index));
+        return false;
+    }
 
     result.outcome = MoveOutcome::Success;
     result.skip_reason = MoveSkipReason::None;

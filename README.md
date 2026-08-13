@@ -19,15 +19,9 @@ IconMover 是一个原生 C++/Win32 桌面托盘工具，用于在多显示器�
 
 ## 构建
 
-建议在已加载 MSVC x64 环境的 Developer PowerShell 中执行，或复用仓库里的 `agent.py` 自动探测并加载可用环境。
+在已加载 MSVC x64 环境的 Developer PowerShell 中直接使用 CMake 构建。
 
-当前仓库在本机默认按下面的顺序构建：
-
-```powershell
-cmd /c "\"D:\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build"
-```
-
-当前仓库验证优先使用 NMake 生成器：
+在 Developer PowerShell 中，推荐使用 NMake 生成器：
 
 ```powershell
 cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
@@ -47,7 +41,7 @@ cmake --build build-vs --config Release
 - 不要在同一个 `build` 目录里来回切换 `NMake Makefiles` 和 `Visual Studio 17 2022` 生成器；需要切换时请改用新的构建目录，或先清理旧缓存。
 - `NMake Makefiles` 是单配置生成器，`cmake --build build --config Release` 不会切换到 Release；要生成 Release，请在配置阶段显式传入 `-DCMAKE_BUILD_TYPE=Release`。
 - 如果配置阶段出现 `CMakeFiles\\cmTC_*.dir\\build.make` 找不到，通常是当前 `build\\CMakeFiles\\CMakeScratch` 的临时状态损坏；先删除或更换构建目录，再重新执行配置即可。
-- 如果 `IconMover.exe` 正在运行，链接阶段可能报 `LNK1168`，因为输出文件被占用。重新编译前先退出正在运行的程序，或改用新的构建目录。
+- 如果 `IconMover.exe` 正在运行，链接阶段可能报 `LNK1104`/`LNK1168`，因为输出文件被占用。重新编译前先退出正在运行的程序，或改用新的构建目录。
 - 仓库中的 `.cpp`、`.h`、`.rc` 和顶层 `CMakeLists.txt` 需保持为 UTF-8 with BOM，避免 MSVC 与资源编译器对中文和资源路径解析不一致。
 
 ## 运行
@@ -74,6 +68,12 @@ Visual Studio 生成器默认输出：
 - 日志：`%APPDATA%\\IconMover\\icon_mover.log`
 - 配置：`%APPDATA%\\IconMover\\config.ini`
 - 开机自启注册表：`HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\IconMover`
+
+## 多 DPI 与显示变化
+
+桌面 `SysListView32` 属于 Explorer 进程，`LVM_GETITEMSPACING` 返回的间距可能按主屏 DPI 虚拟化，而图标坐标最终要写入目标副屏的坐标系。移动器会读取目标显示器的有效 DPI，将 ListView 间距转换到目标 DPI 后再计算网格。例如主屏 200%、副屏 100% 时，`152x204` 会归一化为 `76x102`。
+
+启动自动移动会等待 1.5 秒，`WM_DISPLAYCHANGE` 会合并 2 秒内的连续变化，给 Windows 和 Explorer 留出完成分辨率、缩放和桌面视图重建的时间。应用后会逐个读取图标坐标；任一图标没有落在请求位置或目标工作区内，本次移动会被视为 Explorer 尚未稳定并进入重试，而不会记录为成功。
 
 ## 发布前人工验收
 

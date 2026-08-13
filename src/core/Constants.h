@@ -15,8 +15,8 @@ inline constexpr UINT kTrayIconMessage = WM_APP + 1;
 inline constexpr UINT kShutdownApplicationMessage = WM_APP + 2;
 
 inline constexpr UINT kExplorerRetryIntervalMs = 1000;
-inline constexpr UINT kFirstAutoMoveDelayMs = 250;
-inline constexpr UINT kDisplayChangeDebounceMs = 750;
+inline constexpr UINT kFirstAutoMoveDelayMs = 1500;
+inline constexpr UINT kDisplayChangeDebounceMs = 2000;
 
 inline constexpr wchar_t kConfigFileName[] = L"config.ini";
 inline constexpr wchar_t kConfigSectionGeneral[] = L"general";

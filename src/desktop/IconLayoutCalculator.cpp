@@ -3,7 +3,6 @@
 #include <CommCtrl.h>
 
 #include <algorithm>
-#include <numeric>
 #include <string>
 #include <vector>
 
@@ -16,8 +15,6 @@ namespace
 constexpr wchar_t kIconLayoutPhase[] = L"icon_layout";
 constexpr int kDefaultGridWidth = 96;
 constexpr int kDefaultGridHeight = 96;
-constexpr int kMinimumObservedGridStep = 16;
-constexpr int kMaximumObservedGridStep = 2048;
 
 bool IsRectValid(const RECT& rect) noexcept
 {
@@ -100,19 +97,37 @@ std::wstring PointToString(const POINT& point)
     return text;
 }
 
-SIZE MakeDefaultGridSpacing() noexcept
+int ScaleForDpi(int value, UINT from_dpi, UINT to_dpi) noexcept
+{
+    if (value <= 0 || from_dpi == 0 || to_dpi == 0 || from_dpi == to_dpi)
+    {
+        return value;
+    }
+
+    return std::max(1, ::MulDiv(value, static_cast<int>(to_dpi), static_cast<int>(from_dpi)));
+}
+
+SIZE MakeDefaultGridSpacing(UINT target_dpi) noexcept
 {
     SIZE spacing = {};
-    spacing.cx = kDefaultGridWidth;
-    spacing.cy = kDefaultGridHeight;
+    const UINT resolved_target_dpi = target_dpi == 0 ? USER_DEFAULT_SCREEN_DPI : target_dpi;
+    spacing.cx = ScaleForDpi(kDefaultGridWidth, USER_DEFAULT_SCREEN_DPI, resolved_target_dpi);
+    spacing.cy = ScaleForDpi(kDefaultGridHeight, USER_DEFAULT_SCREEN_DPI, resolved_target_dpi);
     return spacing;
 }
 
-SIZE ResolveGridSpacing(HWND desktop_list_view_window, bool& used_list_view_spacing) noexcept
+SIZE ResolveGridSpacing(
+    HWND desktop_list_view_window,
+    UINT target_dpi,
+    IconLayoutMetrics& metrics) noexcept
 {
-    used_list_view_spacing = false;
+    metrics.used_list_view_spacing = false;
+    metrics.normalized_for_target_dpi = false;
+    metrics.target_dpi = target_dpi == 0 ? USER_DEFAULT_SCREEN_DPI : target_dpi;
+    metrics.source_dpi = USER_DEFAULT_SCREEN_DPI;
 
-    SIZE spacing = MakeDefaultGridSpacing();
+    SIZE spacing = MakeDefaultGridSpacing(metrics.target_dpi);
+    metrics.raw_grid_spacing = spacing;
     if (desktop_list_view_window == nullptr)
     {
         return spacing;
@@ -137,9 +152,14 @@ SIZE ResolveGridSpacing(HWND desktop_list_view_window, bool& used_list_view_spac
         return spacing;
     }
 
-    spacing.cx = horizontal_spacing;
-    spacing.cy = vertical_spacing;
-    used_list_view_spacing = true;
+    const UINT window_dpi = ::GetDpiForWindow(desktop_list_view_window);
+    metrics.source_dpi = window_dpi == 0 ? USER_DEFAULT_SCREEN_DPI : window_dpi;
+    metrics.raw_grid_spacing.cx = horizontal_spacing;
+    metrics.raw_grid_spacing.cy = vertical_spacing;
+    spacing.cx = ScaleForDpi(horizontal_spacing, metrics.source_dpi, metrics.target_dpi);
+    spacing.cy = ScaleForDpi(vertical_spacing, metrics.source_dpi, metrics.target_dpi);
+    metrics.used_list_view_spacing = true;
+    metrics.normalized_for_target_dpi = metrics.source_dpi != metrics.target_dpi;
     return spacing;
 }
 
@@ -156,28 +176,6 @@ std::vector<int> ExtractUniqueAxisValues(std::span<const POINT> positions, bool 
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
     return values;
-}
-
-int ResolveObservedGridStep(const std::vector<int>& axis_values) noexcept
-{
-    int resolved_step = 0;
-    for (std::size_t index = 1; index < axis_values.size(); ++index)
-    {
-        const int difference = axis_values[index] - axis_values[index - 1];
-        if (difference < kMinimumObservedGridStep || difference > kMaximumObservedGridStep)
-        {
-            continue;
-        }
-
-        resolved_step = resolved_step == 0 ? difference : std::gcd(resolved_step, difference);
-    }
-
-    if (resolved_step < kMinimumObservedGridStep)
-    {
-        return 0;
-    }
-
-    return resolved_step;
 }
 
 int ResolveObservedGridPhase(const std::vector<int>& axis_values, int step) noexcept
@@ -213,6 +211,7 @@ bool IconLayoutCalculator::Calculate(
     int icon_count,
     IconLayoutResult& result,
     HWND desktop_list_view_window,
+    UINT target_monitor_dpi,
     std::span<const POINT> sample_positions)
 {
     result = {};
@@ -233,24 +232,11 @@ bool IconLayoutCalculator::Calculate(
 
     result.metrics.grid_spacing = ResolveGridSpacing(
         desktop_list_view_window,
-        result.metrics.used_list_view_spacing);
+        target_monitor_dpi,
+        result.metrics);
 
     const std::vector<int> observed_x_values = ExtractUniqueAxisValues(sample_positions, true);
     const std::vector<int> observed_y_values = ExtractUniqueAxisValues(sample_positions, false);
-
-    const int observed_step_x = ResolveObservedGridStep(observed_x_values);
-    const int observed_step_y = ResolveObservedGridStep(observed_y_values);
-    if (observed_step_x > 0)
-    {
-        result.metrics.grid_spacing.cx = observed_step_x;
-        result.metrics.used_observed_spacing = true;
-    }
-
-    if (observed_step_y > 0)
-    {
-        result.metrics.grid_spacing.cy = observed_step_y;
-        result.metrics.used_observed_spacing = true;
-    }
 
     if (icon_count == 0)
     {
@@ -317,6 +303,14 @@ bool IconLayoutCalculator::Calculate(
     message += RectToString(target_work_area);
     message += L" icon_count=";
     message += std::to_wstring(icon_count);
+    message += L" raw_grid_spacing=[";
+    message += std::to_wstring(result.metrics.raw_grid_spacing.cx);
+    message += L",";
+    message += std::to_wstring(result.metrics.raw_grid_spacing.cy);
+    message += L"] source_dpi=";
+    message += std::to_wstring(result.metrics.source_dpi);
+    message += L" target_dpi=";
+    message += std::to_wstring(result.metrics.target_dpi);
     message += L" grid_spacing=[";
     message += std::to_wstring(result.metrics.grid_spacing.cx);
     message += L",";
@@ -327,8 +321,8 @@ bool IconLayoutCalculator::Calculate(
     message += std::to_wstring(result.metrics.column_count);
     message += L" used_list_view_spacing=";
     message += result.metrics.used_list_view_spacing ? L"true" : L"false";
-    message += L" used_observed_spacing=";
-    message += result.metrics.used_observed_spacing ? L"true" : L"false";
+    message += L" normalized_for_target_dpi=";
+    message += result.metrics.normalized_for_target_dpi ? L"true" : L"false";
     message += L" grid_phase=";
     message += PointToString(result.metrics.grid_phase);
     message += L" start_position=";
