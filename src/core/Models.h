@@ -103,6 +103,7 @@ enum class MoveSkipReason
     ExplorerNotReady,
     NoAvailableMonitor,
     TargetMonitorUnavailable,
+    TargetMonitorCapacityInsufficient,
     NoDesktopIcons
 };
 

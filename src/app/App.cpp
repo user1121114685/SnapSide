@@ -9,6 +9,7 @@
 #include <commctrl.h>
 
 #include "app/CommandHandler.h"
+#include "autostart/AutoStartManager.h"
 #include "common/Logger.h"
 #include "common/Win32Error.h"
 #include "config/ConfigManager.h"
@@ -166,6 +167,9 @@ const wchar_t* MoveSkipReasonName(MoveSkipReason reason) noexcept
     case MoveSkipReason::TargetMonitorUnavailable:
         return L"target_monitor_unavailable";
 
+    case MoveSkipReason::TargetMonitorCapacityInsufficient:
+        return L"target_monitor_capacity_insufficient";
+
     case MoveSkipReason::NoDesktopIcons:
         return L"no_desktop_icons";
 
@@ -203,6 +207,12 @@ bool ShouldRetryDisplayChangeMove(const MoveResult& move_result) noexcept
     return move_result.outcome == MoveOutcome::Failed &&
            (move_result.skip_reason == MoveSkipReason::ExplorerNotReady ||
             DesktopViewAccessor::IsTransientRefreshError(move_result.last_error));
+}
+
+bool ShouldRetryStartupMove(const MoveResult& move_result) noexcept
+{
+    return move_result.outcome == MoveOutcome::Failed &&
+           move_result.skip_reason == MoveSkipReason::ExplorerNotReady;
 }
 
 bool IsExplorerReady(const AppState& state) noexcept
@@ -309,6 +319,8 @@ bool App::Initialize()
         return false;
     }
 
+    RequestExtendedDisplayModeForAutoStart();
+
     if (!tray_manager_.Initialize(instance_, message_window_.Handle()))
     {
         Logger::Error(kBootstrapPhase, L"Failed to initialize the tray icon manager.");
@@ -347,6 +359,24 @@ bool App::LoadConfiguration()
 
 bool App::LoadAutoStartStatus()
 {
+    if (!CommandHandler::RefreshAutoStartState(state_, kBootstrapPhase))
+    {
+        return false;
+    }
+
+    if (!state_.auto_start_enabled)
+    {
+        return true;
+    }
+
+    if (!AutoStartManager::Enable())
+    {
+        Logger::Warning(
+            kBootstrapPhase,
+            L"Could not update the existing auto-start entry with the dedicated startup argument; the current session will continue.");
+        return true;
+    }
+
     return CommandHandler::RefreshAutoStartState(state_, kBootstrapPhase);
 }
 
@@ -393,6 +423,33 @@ bool App::CreateMessageWindow()
     message += std::to_wstring(reinterpret_cast<UINT_PTR>(message_window_.Handle()));
     Logger::Info(kBootstrapPhase, message);
     return true;
+}
+
+void App::RequestExtendedDisplayModeForAutoStart()
+{
+    if (!launch_options_.auto_start_launch)
+    {
+        return;
+    }
+
+    Logger::Info(
+        kBootstrapPhase,
+        L"Auto-start launch requested the Windows extended display topology before desktop icon layout.");
+
+    constexpr UINT32 flags = SDC_APPLY | SDC_TOPOLOGY_EXTEND;
+    const LONG status = ::SetDisplayConfig(0, nullptr, 0, nullptr, flags);
+    if (status != ERROR_SUCCESS)
+    {
+        Logger::Warning(
+            kBootstrapPhase,
+            L"SetDisplayConfig could not apply the extended display topology; startup will continue with the current display mode. " +
+                DescribeWin32Error(static_cast<DWORD>(status)));
+        return;
+    }
+
+    Logger::Info(
+        kBootstrapPhase,
+        L"Windows accepted the extended display topology request; desktop icon layout will wait for the display and Explorer to settle.");
 }
 
 bool App::StartExplorerReadinessWait()
@@ -822,12 +879,17 @@ void App::HandleFirstAutoMoveTimer()
     result_message += L" last_error=";
     result_message += std::to_wstring(move_result.last_error);
 
-    if (move_result.outcome == MoveOutcome::Failed)
+    if (ShouldRetryStartupMove(move_result))
     {
         state_.first_auto_move_state = FirstAutoMoveState::Failed;
         Logger::Warning(CurrentPhase(state_), result_message + L"; scheduling retry.");
         static_cast<void>(ScheduleFirstAutoMove(kExplorerRetryIntervalMs, L"previous_attempt_failed"));
         return;
+    }
+
+    if (move_result.outcome == MoveOutcome::Failed)
+    {
+        Logger::Warning(CurrentPhase(state_), result_message + L"; the failure is not transient and will not be retried.");
     }
 
     state_.first_auto_move_state = FirstAutoMoveState::Completed;
@@ -959,8 +1021,11 @@ void App::HandleExplorerStateUpdate(ExplorerAvailability previous_availability, 
         return;
     }
 
-    std::wstring reason = L"explorer_ready";
-    UINT interval_ms = kFirstAutoMoveDelayMs;
+    std::wstring reason = launch_options_.auto_start_launch
+                              ? L"explorer_ready_after_display_extend_request"
+                              : L"explorer_ready";
+    UINT interval_ms = launch_options_.auto_start_launch ? kFirstAutoMoveAfterDisplayExtendDelayMs
+                                                        : kFirstAutoMoveDelayMs;
 
     if (state_.first_auto_move_state == FirstAutoMoveState::Failed)
     {

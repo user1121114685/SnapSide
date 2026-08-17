@@ -17,6 +17,7 @@ namespace icon_mover
 struct LaunchOptions final
 {
     bool log_test_error = false;
+    bool auto_start_launch = false;
     std::optional<std::wstring> set_target_monitor_id;
 };
 
@@ -33,6 +34,7 @@ private:
     bool LoadAutoStartStatus();
     bool ApplyStartupConfigOverrides();
     bool CreateMessageWindow();
+    void RequestExtendedDisplayModeForAutoStart();
     bool StartExplorerReadinessWait();
     int MessageLoop();
     bool ArmTimer(TimerId timer_id, UINT interval_ms);

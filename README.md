@@ -1,10 +1,12 @@
 ﻿# IconMover
 
-IconMover 是一个原生 C++/Win32 桌面托盘工具，用于在多显示器场景下，把 Windows 桌面 `SysListView32` 中的图标坐标移动到目标显示器工作区。它只修改桌面 ListView 坐标，不移动桌面文件，也不操作文件系统中的快捷方式或实际文件。
+IconMover 是一个原生 C++/Win32 桌面托盘工具，用于在多显示器场景下，把 Windows 桌面 `SysListView32` 中的图标优先排列到目标显示器工作区。它只修改桌面 ListView 坐标，不移动桌面文件，也不操作文件系统中的快捷方式或实际文件。
 
 ## 功能摘要
 
 - 启动后等待 Explorer 桌面 `SysListView32` 就绪，并自动执行一次图标移动。
+- 登录自启时先请求 Windows 使用“扩展这些显示器”拓扑，再等待显示器和 Explorer 稳定。
+- 目标显示器空间不足时，使用各显示器的原生 DPI 网格，依次溢出到其他副屏和主屏，避免重叠。
 - 托盘菜单支持“立即移动图标”“设置目标显示器”“开机自启”“退出”。
 - 使用 `WM_DISPLAYCHANGE` 监听显示器变化，自动重新枚举拓扑并重排图标。
 - 开机自启状态保存在 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`。
@@ -61,19 +63,22 @@ Visual Studio 生成器默认输出：
 辅助启动参数：
 
 - `--set-target-monitor=<monitor_id>`：直接更新配置中的目标显示器并退出。
+- `--autostart`：登录自启专用；先请求扩展显示器，再延迟执行图标重排。手动启动不强制切换显示模式。
 - `--log-test-error`：写入一条受控错误日志，便于检查 `GetLastError() + FormatMessage` 日志路径。
 
 ## 运行时数据
 
 - 日志：`%APPDATA%\\IconMover\\icon_mover.log`
 - 配置：`%APPDATA%\\IconMover\\config.ini`
-- 开机自启注册表：`HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\IconMover`
+- 开机自启注册表：`HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\IconMover`，命令行为 `"<IconMover.exe>" --autostart`。旧版不带参数的注册项会自动迁移。
 
 ## 多 DPI 与显示变化
 
 桌面 `SysListView32` 属于 Explorer 进程，`LVM_GETITEMSPACING` 返回的间距可能按主屏 DPI 虚拟化，而图标坐标最终要写入目标副屏的坐标系。移动器会读取目标显示器的有效 DPI，将 ListView 间距转换到目标 DPI 后再计算网格。例如主屏 200%、副屏 100% 时，`152x204` 会归一化为 `76x102`。
 
-启动自动移动会等待 1.5 秒，`WM_DISPLAYCHANGE` 会合并 2 秒内的连续变化，给 Windows 和 Explorer 留出完成分辨率、缩放和桌面视图重建的时间。应用后会逐个读取图标坐标；任一图标没有落在请求位置或目标工作区内，本次移动会被视为 Explorer 尚未稳定并进入重试，而不会记录为成功。
+程序不会用小于显示器原生 DPI 网格的间距强塞图标，因为 Explorer 会把这些坐标重新吸附并造成重叠。目标副屏容量不足时，先填满目标副屏，再按“其他副屏、主屏”的顺序排列剩余图标。
+
+普通启动自动移动会等待 1.5 秒；登录自启会先调用 `SetDisplayConfig(SDC_TOPOLOGY_EXTEND)`，再等待 4 秒。`WM_DISPLAYCHANGE` 会合并 2 秒内的连续变化，给 Windows 和 Explorer 留出完成分辨率、缩放和桌面视图重建的时间。应用后会逐个读取图标坐标，并检查显示器归属和重复坐标；永久布局错误不会进入无限重试。
 
 ## 发布前人工验收
 
@@ -86,12 +91,13 @@ Visual Studio 生成器默认输出：
 
 1. 连接主屏和至少一个副屏，确保 Explorer 为当前桌面 Shell。
 2. 清空旧日志或记录当前日志末尾时间戳。
-3. 启动 `IconMover.exe`，等待托盘图标出现并等待 Explorer 桌面就绪。
+3. 使用登录自启，或以 `IconMover.exe --autostart` 启动，等待托盘图标出现并等待 Explorer 桌面就绪。
 
 预期：
 
-- 图标在启动后自动移动到默认副屏，或移动到配置中保存的目标显示器。
-- 日志中能看到启动、Explorer 就绪、目标显示器解析、图标移动开始/完成的完整记录。
+- Windows 切换到扩展显示器模式。
+- 图标优先移动到默认副屏或配置中的目标显示器；超出目标网格容量的图标整齐排列到其他活动显示器。
+- 日志中能看到扩展模式请求、Explorer 就绪、目标显示器解析、各屏容量和图标移动结果。
 
 ### 2. 手动“立即移动图标”
 
@@ -114,7 +120,7 @@ Visual Studio 生成器默认输出：
 
 预期：
 
-- 配置立即持久化，图标立刻重排到新目标显示器工作区。
+- 配置立即持久化，图标优先重排到新目标显示器工作区，溢出部分使用其他活动显示器。
 - 日志中能看到目标显示器选择、配置保存、目标显示器解析结果和移动结果。
 
 ### 4. 开机自启开关
@@ -128,6 +134,7 @@ Visual Studio 生成器默认输出：
 预期：
 
 - 菜单勾选状态与注册表真实值一致。
+- 注册表命令行包含 `--autostart`。
 - 日志中能看到自启状态读取、写入、校验和最终有效状态。
 
 ### 5. 断开副屏降级

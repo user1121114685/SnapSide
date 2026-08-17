@@ -1,5 +1,6 @@
 ﻿#include "autostart/AutoStartManager.h"
 
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -10,6 +11,7 @@
 #include "IconMover/Version.h"
 #include "common/Logger.h"
 #include "common/Win32Error.h"
+#include "core/Constants.h"
 
 namespace icon_mover
 {
@@ -242,7 +244,7 @@ DWORD GetCurrentExecutablePath(std::wstring& path)
     return ERROR_BUFFER_OVERFLOW;
 }
 
-DWORD BuildCurrentExecutableCommandLine(std::wstring& command_line)
+DWORD BuildCurrentExecutableCommandLine(std::wstring& command_line, bool auto_start_launch)
 {
     std::wstring executable_path;
     const DWORD path_error = GetCurrentExecutablePath(executable_path);
@@ -252,10 +254,17 @@ DWORD BuildCurrentExecutableCommandLine(std::wstring& command_line)
     }
 
     command_line.clear();
-    command_line.reserve(executable_path.size() + 2);
+    command_line.reserve(
+        executable_path.size() + 2 +
+        (auto_start_launch ? 1 + std::size(kAutoStartLaunchArgument) - 1 : 0));
     command_line += L'"';
     command_line += executable_path;
     command_line += L'"';
+    if (auto_start_launch)
+    {
+        command_line += L' ';
+        command_line += kAutoStartLaunchArgument;
+    }
     return ERROR_SUCCESS;
 }
 
@@ -304,14 +313,16 @@ DWORD RestoreRunValue(HKEY key, const RunValueSnapshot& snapshot)
 
 bool PopulateStatusFromSnapshot(
     const RunValueSnapshot& snapshot,
-    std::wstring_view current_command_line,
+    std::wstring_view current_auto_start_command_line,
+    std::wstring_view legacy_command_line,
     AutoStartStatus& status)
 {
     status.enabled = snapshot.exists;
     status.command_line = snapshot.string_value;
     status.matches_current_executable =
-        !current_command_line.empty() && snapshot.exists && IsStringValueType(snapshot.type) &&
-        EqualsCaseInsensitive(snapshot.string_value, current_command_line);
+        !current_auto_start_command_line.empty() && snapshot.exists && IsStringValueType(snapshot.type) &&
+        (EqualsCaseInsensitive(snapshot.string_value, current_auto_start_command_line) ||
+         EqualsCaseInsensitive(snapshot.string_value, legacy_command_line));
     return true;
 }
 
@@ -358,14 +369,25 @@ bool AutoStartManager::Query(AutoStartStatus& status)
         return false;
     }
 
-    std::wstring current_command_line;
-    const DWORD command_error = BuildCurrentExecutableCommandLine(current_command_line);
-    if (command_error != ERROR_SUCCESS)
+    std::wstring current_auto_start_command_line;
+    const DWORD auto_start_command_error = BuildCurrentExecutableCommandLine(current_auto_start_command_line, true);
+    if (auto_start_command_error != ERROR_SUCCESS)
     {
-        current_command_line.clear();
+        current_auto_start_command_line.clear();
     }
 
-    return PopulateStatusFromSnapshot(snapshot, current_command_line, status);
+    std::wstring legacy_command_line;
+    const DWORD legacy_command_error = BuildCurrentExecutableCommandLine(legacy_command_line, false);
+    if (legacy_command_error != ERROR_SUCCESS)
+    {
+        legacy_command_line.clear();
+    }
+
+    return PopulateStatusFromSnapshot(
+        snapshot,
+        current_auto_start_command_line,
+        legacy_command_line,
+        status);
 }
 
 bool AutoStartManager::SetEnabled(bool enabled)
@@ -403,7 +425,7 @@ bool AutoStartManager::SetEnabled(bool enabled)
     std::wstring expected_command_line;
     if (enabled)
     {
-        const DWORD command_error = BuildCurrentExecutableCommandLine(expected_command_line);
+        const DWORD command_error = BuildCurrentExecutableCommandLine(expected_command_line, true);
         if (command_error != ERROR_SUCCESS)
         {
             Logger::Error(

@@ -4,6 +4,8 @@
 
 #include <shellapi.h>
 
+#include "core/Constants.h"
+
 namespace
 {
 icon_mover::LaunchOptions ParseLaunchOptions()
@@ -25,6 +27,12 @@ icon_mover::LaunchOptions ParseLaunchOptions()
         if (::lstrcmpiW(argv[index], L"--log-test-error") == 0)
         {
             options.log_test_error = true;
+            continue;
+        }
+
+        if (::lstrcmpiW(argv[index], icon_mover::kAutoStartLaunchArgument) == 0)
+        {
+            options.auto_start_launch = true;
             continue;
         }
 

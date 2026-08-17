@@ -16,7 +16,10 @@ inline constexpr UINT kShutdownApplicationMessage = WM_APP + 2;
 
 inline constexpr UINT kExplorerRetryIntervalMs = 1000;
 inline constexpr UINT kFirstAutoMoveDelayMs = 1500;
+inline constexpr UINT kFirstAutoMoveAfterDisplayExtendDelayMs = 4000;
 inline constexpr UINT kDisplayChangeDebounceMs = 2000;
+
+inline constexpr wchar_t kAutoStartLaunchArgument[] = L"--autostart";
 
 inline constexpr wchar_t kConfigFileName[] = L"config.ini";
 inline constexpr wchar_t kConfigSectionGeneral[] = L"general";
