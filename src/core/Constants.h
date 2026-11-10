@@ -13,6 +13,7 @@ enum class TimerId : UINT_PTR
 
 inline constexpr UINT kTrayIconMessage = WM_APP + 1;
 inline constexpr UINT kShutdownApplicationMessage = WM_APP + 2;
+inline constexpr int kExtendDisplaysHotkeyId = 1;
 
 inline constexpr UINT kExplorerRetryIntervalMs = 1000;
 inline constexpr UINT kFirstAutoMoveDelayMs = 1500;

@@ -34,7 +34,9 @@ private:
     bool LoadAutoStartStatus();
     bool ApplyStartupConfigOverrides();
     bool CreateMessageWindow();
-    void RequestExtendedDisplayModeForAutoStart();
+    void RegisterExtendDisplaysHotkey();
+    void UnregisterExtendDisplaysHotkey();
+    void RequestExtendedDisplayMode(std::wstring_view reason);
     bool StartExplorerReadinessWait();
     int MessageLoop();
     bool ArmTimer(TimerId timer_id, UINT interval_ms);
@@ -68,6 +70,7 @@ private:
     TrayManager tray_manager_;
     int exit_code_;
     bool shutdown_requested_;
+    bool extend_displays_hotkey_registered_ = false;
     bool pending_display_change_move_;
     bool suppress_immediate_display_change_move_;
     bool display_change_move_session_active_;

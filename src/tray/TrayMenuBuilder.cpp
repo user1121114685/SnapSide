@@ -11,6 +11,7 @@ namespace
 enum class TrayMenuText
 {
     MoveIconsNow,
+    ExtendDisplays,
     SetTargetMonitor,
     LaunchAtStartup,
     Exit,
@@ -34,6 +35,9 @@ const wchar_t* Text(TrayMenuLanguage tray_menu_language, TrayMenuText text) noex
         {
         case TrayMenuText::MoveIconsNow:
             return L"立即移动图标";
+
+        case TrayMenuText::ExtendDisplays:
+            return L"扩展这些显示器\tCtrl+F11";
 
         case TrayMenuText::SetTargetMonitor:
             return L"设置目标显示器";
@@ -64,6 +68,9 @@ const wchar_t* Text(TrayMenuLanguage tray_menu_language, TrayMenuText text) noex
         {
         case TrayMenuText::MoveIconsNow:
             return L"Move Icons Now";
+
+        case TrayMenuText::ExtendDisplays:
+            return L"Extend These Displays\tCtrl+F11";
 
         case TrayMenuText::SetTargetMonitor:
             return L"Set Target Monitor";
@@ -216,6 +223,15 @@ bool TrayMenuBuilder::PopulateMenu(
             MF_STRING,
             ID_TRAY_MOVE_ICONS_NOW,
             Text(context.tray_menu_language, TrayMenuText::MoveIconsNow)))
+    {
+        return false;
+    }
+
+    if (!AppendMenuItem(
+            menu,
+            MF_STRING,
+            ID_TRAY_EXTEND_DISPLAYS,
+            Text(context.tray_menu_language, TrayMenuText::ExtendDisplays)))
     {
         return false;
     }

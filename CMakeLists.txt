@@ -5,7 +5,7 @@ if(NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
-project(IconMover VERSION 0.1.0 LANGUAGES CXX RC)
+project(IconMover VERSION 0.1.1 LANGUAGES CXX RC)
 
 if(NOT WIN32)
     message(FATAL_ERROR "IconMover requires Windows.")

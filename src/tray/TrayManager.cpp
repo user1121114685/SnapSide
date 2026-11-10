@@ -137,6 +137,9 @@ std::optional<TrayCommand> TrayManager::HandleCommand(WPARAM w_param) const
     case ID_TRAY_MOVE_ICONS_NOW:
         return TrayCommand{TrayCommandType::MoveIconsNow, std::wstring(), std::nullopt};
 
+    case ID_TRAY_EXTEND_DISPLAYS:
+        return TrayCommand{TrayCommandType::ExtendDisplays, std::wstring(), std::nullopt};
+
     case ID_TRAY_TOGGLE_AUTO_START:
         return TrayCommand{TrayCommandType::ToggleAutoStart, std::wstring(), std::nullopt};
 

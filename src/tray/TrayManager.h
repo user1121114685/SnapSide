@@ -20,6 +20,7 @@ enum class TrayCallbackAction
 enum class TrayCommandType
 {
     MoveIconsNow,
+    ExtendDisplays,
     ToggleAutoStart,
     SelectTargetMonitor,
     SetTrayMenuLanguage,

@@ -48,6 +48,9 @@ const wchar_t* ToString(TrayCommandType command_type) noexcept
     case TrayCommandType::MoveIconsNow:
         return L"move_icons_now";
 
+    case TrayCommandType::ExtendDisplays:
+        return L"extend_displays";
+
     case TrayCommandType::ToggleAutoStart:
         return L"toggle_auto_start";
 
@@ -171,6 +174,10 @@ bool CommandHandler::HandleTrayCommand(
     case TrayCommandType::MoveIconsNow:
         result.should_execute_move = true;
         result.move_trigger = MoveTrigger::ManualCommand;
+        return true;
+
+    case TrayCommandType::ExtendDisplays:
+        result.should_extend_displays = true;
         return true;
 
     case TrayCommandType::ToggleAutoStart:

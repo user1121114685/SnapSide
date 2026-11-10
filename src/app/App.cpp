@@ -319,7 +319,12 @@ bool App::Initialize()
         return false;
     }
 
-    RequestExtendedDisplayModeForAutoStart();
+    RegisterExtendDisplaysHotkey();
+
+    if (launch_options_.auto_start_launch)
+    {
+        RequestExtendedDisplayMode(L"auto_start");
+    }
 
     if (!tray_manager_.Initialize(instance_, message_window_.Handle()))
     {
@@ -425,30 +430,65 @@ bool App::CreateMessageWindow()
     return true;
 }
 
-void App::RequestExtendedDisplayModeForAutoStart()
+void App::RegisterExtendDisplaysHotkey()
 {
-    if (!launch_options_.auto_start_launch)
+    if (::RegisterHotKey(message_window_.Handle(), kExtendDisplaysHotkeyId, MOD_CONTROL | MOD_NOREPEAT, VK_F11) == FALSE)
+    {
+        Logger::LogLastError(
+            LogLevel::Warning,
+            kBootstrapPhase,
+            L"Could not register the global Ctrl+F11 hotkey; it may already be in use. Extend Displays remains available from the tray menu.");
+        return;
+    }
+
+    extend_displays_hotkey_registered_ = true;
+    Logger::Info(kBootstrapPhase, L"Registered the global Ctrl+F11 hotkey for extended displays (no key auto-repeat).");
+}
+
+void App::UnregisterExtendDisplaysHotkey()
+{
+    if (!extend_displays_hotkey_registered_)
     {
         return;
     }
 
+    if (::UnregisterHotKey(message_window_.Handle(), kExtendDisplaysHotkeyId) == FALSE)
+    {
+        Logger::LogLastError(LogLevel::Warning, kShutdownPhase, L"Failed to unregister the global Ctrl+F11 hotkey.");
+    }
+    else
+    {
+        Logger::Info(kShutdownPhase, L"Unregistered the global Ctrl+F11 hotkey.");
+    }
+
+    extend_displays_hotkey_registered_ = false;
+}
+
+void App::RequestExtendedDisplayMode(std::wstring_view reason)
+{
+    if (shutdown_requested_)
+    {
+        return;
+    }
+
+    const wchar_t* phase = CurrentPhase(state_);
     Logger::Info(
-        kBootstrapPhase,
-        L"Auto-start launch requested the Windows extended display topology before desktop icon layout.");
+        phase,
+        L"Requesting the Windows extended display topology. reason=\"" + std::wstring(reason) + L"\"");
 
     constexpr UINT32 flags = SDC_APPLY | SDC_TOPOLOGY_EXTEND;
     const LONG status = ::SetDisplayConfig(0, nullptr, 0, nullptr, flags);
     if (status != ERROR_SUCCESS)
     {
         Logger::Warning(
-            kBootstrapPhase,
-            L"SetDisplayConfig could not apply the extended display topology; startup will continue with the current display mode. " +
+            phase,
+            L"SetDisplayConfig could not apply the extended display topology; continuing with the current display mode. " +
                 DescribeWin32Error(static_cast<DWORD>(status)));
         return;
     }
 
     Logger::Info(
-        kBootstrapPhase,
+        phase,
         L"Windows accepted the extended display topology request; desktop icon layout will wait for the display and Explorer to settle.");
 }
 
@@ -1271,6 +1311,7 @@ void App::BeginShutdown(int exit_code, std::wstring_view reason)
     display_change_started_tick_ = 0;
     display_change_move_attempt_count_ = 0;
     DisarmAllTimers();
+    UnregisterExtendDisplaysHotkey();
     desktop_view_accessor_.Reset();
     tray_manager_.Shutdown();
 
@@ -1310,6 +1351,14 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
         HandleDisplayChange(static_cast<UINT>(w_param), LOWORD(l_param), HIWORD(l_param));
         return 0;
 
+    case WM_HOTKEY:
+        if (w_param == static_cast<WPARAM>(kExtendDisplaysHotkeyId) && extend_displays_hotkey_registered_)
+        {
+            RequestExtendedDisplayMode(L"global_hotkey");
+            return 0;
+        }
+        return std::nullopt;
+
     case WM_COMMAND:
     {
         const std::optional<TrayCommand> tray_command = tray_manager_.HandleCommand(w_param);
@@ -1322,6 +1371,11 @@ std::optional<LRESULT> App::OnMessageWindowMessage(HWND window, UINT message, WP
         if (!CommandHandler::HandleTrayCommand(*tray_command, state_, kRuntimePhase, dispatch_result))
         {
             return 0;
+        }
+
+        if (dispatch_result.should_extend_displays)
+        {
+            RequestExtendedDisplayMode(L"tray_command");
         }
 
         const bool tray_command_can_trigger_move =

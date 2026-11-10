@@ -10,6 +10,7 @@ namespace icon_mover
 struct CommandDispatchResult final
 {
     bool should_execute_move = false;
+    bool should_extend_displays = false;
     MoveTrigger move_trigger = MoveTrigger::ManualCommand;
     bool should_exit = false;
 };
